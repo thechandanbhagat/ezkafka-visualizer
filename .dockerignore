@@ -1,0 +1,23 @@
+# Docker ignore file for ezkafka-visualizer
+node_modules
+npm-debug.log
+.next
+.git
+.gitignore
+README.md
+Dockerfile
+.dockerignore
+.env
+.env.local
+.env.production.local
+.env.development.local
+coverage
+.nyc_output
+*.log
+.DS_Store
+Thumbs.db
+
+# Backup files
+*_backup.*
+*_backup/
+*backup*

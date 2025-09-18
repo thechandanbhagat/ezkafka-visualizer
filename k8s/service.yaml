@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ezkafka-visualizer-service
+  namespace: ezkafka-visualizer
+  labels:
+    app: ezkafka-visualizer
+spec:
+  type: ClusterIP
+  ports:
+  - port: 3700
+    targetPort: 3700
+    protocol: TCP
+    name: http
+  selector:
+    app: ezkafka-visualizer
