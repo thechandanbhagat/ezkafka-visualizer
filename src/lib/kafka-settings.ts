@@ -15,6 +15,20 @@ export interface KafkaSettings {
   lingerMs: number;
 }
 
+export interface KafkaServerProfile {
+  id: string;
+  name: string;
+  description?: string;
+  settings: KafkaSettings;
+  isActive?: boolean;
+  lastConnected?: string;
+}
+
+export interface MultiServerConfig {
+  profiles: KafkaServerProfile[];
+  activeProfileId: string;
+}
+
 // Predefined message size options (in bytes)
 export const MESSAGE_SIZE_PRESETS = {
   tiny: 1024,        // 1KB
@@ -39,6 +53,20 @@ export const DEFAULT_SETTINGS: KafkaSettings = {
   compressionType: 'none',
   batchSize: 16384, // 16KB
   lingerMs: 0
+};
+
+export const DEFAULT_LOCAL_PROFILE: KafkaServerProfile = {
+  id: 'local',
+  name: 'Local Kafka',
+  description: 'Local Kafka instance running on localhost:9092',
+  settings: DEFAULT_SETTINGS,
+  isActive: true,
+  lastConnected: undefined
+};
+
+export const DEFAULT_MULTI_SERVER_CONFIG: MultiServerConfig = {
+  profiles: [DEFAULT_LOCAL_PROFILE],
+  activeProfileId: 'local'
 };
 
 // Validate and sanitize settings
@@ -98,4 +126,99 @@ export function validateSettings(settings: Partial<KafkaSettings>): Partial<Kafk
   }
   
   return validated;
+}
+
+// Multi-server configuration utilities
+export function createServerProfile(
+  name: string,
+  settings: Partial<KafkaSettings>,
+  description?: string
+): KafkaServerProfile {
+  const id = generateProfileId(name);
+  const validatedSettings = { ...DEFAULT_SETTINGS, ...validateSettings(settings) };
+  
+  return {
+    id,
+    name: name.trim(),
+    description,
+    settings: validatedSettings,
+    isActive: false,
+    lastConnected: undefined
+  };
+}
+
+export function generateProfileId(name: string): string {
+  return name.toLowerCase()
+    .replace(/[^a-z0-9]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '') + '-' + Date.now().toString(36);
+}
+
+export function validateMultiServerConfig(config: Partial<MultiServerConfig>): MultiServerConfig {
+  let profiles = DEFAULT_MULTI_SERVER_CONFIG.profiles;
+  let activeProfileId = DEFAULT_MULTI_SERVER_CONFIG.activeProfileId;
+
+  if (config.profiles && Array.isArray(config.profiles) && config.profiles.length > 0) {
+    profiles = config.profiles.map(profile => ({
+      ...profile,
+      settings: { ...DEFAULT_SETTINGS, ...validateSettings(profile.settings) }
+    }));
+  }
+
+  if (config.activeProfileId && 
+      typeof config.activeProfileId === 'string' && 
+      profiles.some(p => p.id === config.activeProfileId)) {
+    activeProfileId = config.activeProfileId;
+  }
+
+  return { profiles, activeProfileId };
+}
+
+export function getActiveProfile(config: MultiServerConfig): KafkaServerProfile | null {
+  return config.profiles.find(p => p.id === config.activeProfileId) || null;
+}
+
+export function updateProfileLastConnected(
+  config: MultiServerConfig, 
+  profileId: string
+): MultiServerConfig {
+  const updatedProfiles = config.profiles.map(profile => 
+    profile.id === profileId 
+      ? { ...profile, lastConnected: new Date().toISOString() }
+      : profile
+  );
+  
+  return { ...config, profiles: updatedProfiles };
+}
+
+export function addOrUpdateProfile(
+  config: MultiServerConfig,
+  profile: KafkaServerProfile
+): MultiServerConfig {
+  const existingIndex = config.profiles.findIndex(p => p.id === profile.id);
+  const updatedProfiles = [...config.profiles];
+  
+  if (existingIndex >= 0) {
+    updatedProfiles[existingIndex] = profile;
+  } else {
+    updatedProfiles.push(profile);
+  }
+  
+  return { ...config, profiles: updatedProfiles };
+}
+
+export function removeProfile(config: MultiServerConfig, profileId: string): MultiServerConfig {
+  if (config.profiles.length <= 1) {
+    throw new Error('Cannot remove the last remaining profile');
+  }
+  
+  const updatedProfiles = config.profiles.filter(p => p.id !== profileId);
+  let activeProfileId = config.activeProfileId;
+  
+  // If we're removing the active profile, switch to the first remaining one
+  if (activeProfileId === profileId) {
+    activeProfileId = updatedProfiles[0]?.id || '';
+  }
+  
+  return { profiles: updatedProfiles, activeProfileId };
 }

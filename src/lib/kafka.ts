@@ -1,4 +1,5 @@
 import { Kafka, Producer, Consumer, Admin } from 'kafkajs';
+import { KafkaServerProfile, MultiServerConfig, DEFAULT_MULTI_SERVER_CONFIG } from './kafka-settings';
 
 export interface KafkaConfig {
   brokers: string[];
@@ -398,19 +399,101 @@ export class KafkaService {
   }
 }
 
-// Singleton instance
-let kafkaService: KafkaService | null = null;
+// Multi-server Kafka connection manager
+export class KafkaConnectionManager {
+  private static instance: KafkaConnectionManager | null = null;
+  private connections: Map<string, KafkaService> = new Map();
+  private config: MultiServerConfig;
 
-export function getKafkaService(): KafkaService {
-  if (!kafkaService) {
-    kafkaService = new KafkaService({
-      clientId: 'ezkafka-visualizer',
-      brokers: ['localhost:9092'],
-    });
+  private constructor() {
+    this.config = DEFAULT_MULTI_SERVER_CONFIG;
   }
-  return kafkaService;
+
+  static getInstance(): KafkaConnectionManager {
+    if (!KafkaConnectionManager.instance) {
+      KafkaConnectionManager.instance = new KafkaConnectionManager();
+    }
+    return KafkaConnectionManager.instance;
+  }
+
+  setConfig(config: MultiServerConfig): void {
+    this.config = config;
+  }
+
+  getConfig(): MultiServerConfig {
+    return this.config;
+  }
+
+  getActiveProfile(): KafkaServerProfile | null {
+    return this.config.profiles.find(p => p.id === this.config.activeProfileId) || null;
+  }
+
+  getConnection(profileId?: string): KafkaService {
+    const targetProfileId = profileId || this.config.activeProfileId;
+    const profile = this.config.profiles.find(p => p.id === targetProfileId);
+    
+    if (!profile) {
+      throw new Error(`Kafka profile not found: ${targetProfileId}`);
+    }
+
+    // Check if we already have a connection for this profile
+    let connection = this.connections.get(targetProfileId);
+    
+    if (!connection) {
+      // Create new connection
+      connection = new KafkaService(profile.settings);
+      this.connections.set(targetProfileId, connection);
+    }
+
+    return connection;
+  }
+
+  async disconnectAll(): Promise<void> {
+    const disconnectPromises = Array.from(this.connections.values()).map(
+      connection => connection.disconnect()
+    );
+    await Promise.allSettled(disconnectPromises);
+    this.connections.clear();
+  }
+
+  async disconnectProfile(profileId: string): Promise<void> {
+    const connection = this.connections.get(profileId);
+    if (connection) {
+      await connection.disconnect();
+      this.connections.delete(profileId);
+    }
+  }
+
+  getAllProfiles(): KafkaServerProfile[] {
+    return this.config.profiles;
+  }
+
+  switchActiveProfile(profileId: string): void {
+    const profile = this.config.profiles.find(p => p.id === profileId);
+    if (!profile) {
+      throw new Error(`Profile not found: ${profileId}`);
+    }
+    this.config.activeProfileId = profileId;
+  }
 }
 
+// Singleton instance for backward compatibility
+let kafkaService: KafkaService | null = null;
+
+// New multi-server functions
+export function getKafkaConnectionManager(): KafkaConnectionManager {
+  return KafkaConnectionManager.getInstance();
+}
+
+export function getKafkaService(profileId?: string): KafkaService {
+  return getKafkaConnectionManager().getConnection(profileId);
+}
+
+export function getActiveKafkaService(): KafkaService {
+  return getKafkaConnectionManager().getConnection();
+}
+
+// Legacy function for backward compatibility
 export function createKafkaServiceWithSettings(settings: KafkaConfig): KafkaService {
   kafkaService = new KafkaService(settings);
   return kafkaService;
@@ -418,20 +501,20 @@ export function createKafkaServiceWithSettings(settings: KafkaConfig): KafkaServ
 
 export async function reinitializeKafkaService(): Promise<KafkaService> {
   try {
-    // Fetch current settings from API
+    // Fetch current multi-server config from API
     const response = await fetch('/api/settings');
     if (response.ok) {
       const data = await response.json();
-      if (data.success) {
-        const settings = data.settings;
-        kafkaService = new KafkaService(settings);
-        return kafkaService;
+      if (data.success && data.multiServerConfig) {
+        const manager = getKafkaConnectionManager();
+        manager.setConfig(data.multiServerConfig);
+        return manager.getConnection();
       }
     }
   } catch (error) {
-    console.warn('Could not fetch settings, using defaults:', error);
+    console.warn('Could not fetch multi-server config, using defaults:', error);
   }
   
   // Fallback to default configuration
-  return getKafkaService();
+  return getActiveKafkaService();
 }
