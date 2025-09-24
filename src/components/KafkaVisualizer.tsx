@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Database, MessageSquare, Monitor, Users, Settings, ChevronLeft, ChevronRight } from 'lucide-react';
 import TopicList from './TopicList';
@@ -8,7 +8,9 @@ import MessageProducer from './MessageProducer';
 import MessageConsumer from './MessageConsumer';
 import ConsumerGroups from './ConsumerGroups';
 import KafkaSettings from './KafkaSettings';
+import NavbarServerSelector from './NavbarServerSelector';
 import { TopicInfo } from '@/lib/kafka';
+import { useServer } from '@/contexts/ServerContext';
 
 export default function KafkaVisualizer() {
   const router = useRouter();
@@ -19,12 +21,18 @@ export default function KafkaVisualizer() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [appName, setAppName] = useState<string>('EZ Kafka Visualizer');
+  
+  // Use global server context
+  const { activeProfile, selectedProfileId } = useServer();
 
-  const fetchTopics = async () => {
+  const fetchTopics = useCallback(async (profileId?: string) => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/topics');
+      // Use the provided profileId or fall back to the globally selected one
+      const targetProfileId = profileId || selectedProfileId;
+      const url = targetProfileId ? `/api/topics?profileId=${encodeURIComponent(targetProfileId)}` : '/api/topics';
+      const response = await fetch(url);
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.message || errorData.error || 'Failed to fetch topics');
@@ -37,21 +45,17 @@ export default function KafkaVisualizer() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedProfileId]);
 
   useEffect(() => {
-    fetchTopics();
-    // Load app name from settings
-    (async () => {
-      try {
-        const res = await fetch('/api/settings');
-        const data = await res.json();
-        if (data?.settings?.appName) setAppName(data.settings.appName);
-      } catch {
-        // ignore and keep default
-      }
-    })();
-  }, []);
+    if (selectedProfileId) {
+      fetchTopics();
+    }
+    // Load app name from active profile
+    if (activeProfile?.settings?.appName) {
+      setAppName(activeProfile.settings.appName);
+    }
+  }, [selectedProfileId, activeProfile, fetchTopics]); // Re-fetch when server changes
 
   const tabs = [
     { id: 'topics', label: 'Topics', icon: Database, path: '/topics' },
@@ -62,22 +66,43 @@ export default function KafkaVisualizer() {
   ] as const;
 
   return (
-    <div className="flex w-full h-screen bg-slate-50 dark:bg-slate-900">
-      {/* Left Sidebar */}
+    <div className="flex flex-col w-full h-screen bg-slate-50 dark:bg-slate-900">
+      {/* Top Navbar */}
+      <nav className="h-14 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-4 relative z-50">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-blue-600 rounded-md flex items-center justify-center">
+            <Database className="w-4 h-4 text-white" />
+          </div>
+          <h1 className="text-lg font-semibold text-slate-900 dark:text-white">{appName}</h1>
+        </div>
+        
+        <div className="flex items-center gap-4">
+          {/* Connection Status */}
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${error ? 'bg-red-500' : 'bg-green-500'}`}></div>
+            <span className="text-sm text-slate-600 dark:text-slate-300">
+              {error ? 'Disconnected' : 'Connected'}
+            </span>
+          </div>
+          
+          {/* Server Selector */}
+          <div className="relative">
+            <NavbarServerSelector />
+          </div>
+        </div>
+      </nav>
+
+      {/* Main Content Area */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Left Sidebar */}
       <div className={`${collapsed ? 'w-16' : 'w-64'} relative bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex-shrink-0 transition-all duration-200`}>
         {/* Sidebar header */}
         <div className="h-14 px-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-slate-100 dark:bg-slate-800 rounded-md flex items-center justify-center">
-              <Database className="w-4 h-4 text-slate-700 dark:text-slate-300" />
+          {!collapsed && (
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-slate-600 dark:text-slate-300">Navigation</span>
             </div>
-            {!collapsed && (
-              <div className="leading-tight">
-                <h2 className="text-sm font-semibold">{appName}</h2>
-                <p className="text-[11px] text-slate-500">localhost:9092</p>
-              </div>
-            )}
-          </div>
+          )}
           <button
             aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             onClick={() => setCollapsed(v => !v)}
@@ -110,20 +135,17 @@ export default function KafkaVisualizer() {
           })}
         </nav>
 
-        {/* Connection Status */}
+        {/* Sidebar Footer */}
         <div className={`absolute bottom-0 left-0 right-0 ${collapsed ? 'px-2 py-2' : 'px-3 py-3'} border-t border-slate-200 dark:border-slate-800`}>
           <div className={`flex items-center ${collapsed ? 'justify-center' : 'justify-between'}`}>
-            <div className="flex items-center">
-              <div className={`w-2.5 h-2.5 rounded-full mr-2 ${error ? 'bg-red-400' : 'bg-emerald-400'}`}></div>
-              {!collapsed && (
-                <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
-                  {error ? 'Disconnected' : 'Connected'}
-                </span>
-              )}
-            </div>
-            {!collapsed && error && (
+            {!collapsed && (
+              <div className="text-xs text-slate-500 dark:text-slate-400">
+                Kafka Visualizer v1.0
+              </div>
+            )}
+            {error && !collapsed && (
               <button
-                onClick={fetchTopics}
+                onClick={() => fetchTopics()}
                 className="px-2 py-1 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 dark:text-blue-400 dark:bg-blue-900/20 dark:hover:bg-blue-900/30 rounded-md"
               >
                 Retry
@@ -156,12 +178,16 @@ export default function KafkaVisualizer() {
             )}
             {current === 'producer' && <MessageProducer topics={topics.map((t) => t.name)} />}
             {current === 'consumer' && <MessageConsumer topics={topics.map((t) => t.name)} />}
-            {current === 'groups' && <ConsumerGroups onRefresh={fetchTopics} />}
+            {current === 'groups' && <ConsumerGroups onRefresh={() => fetchTopics()} />}
             {current === 'settings' && (
               <KafkaSettings
-                onSettingsUpdate={(settings) => {
-                  console.log('Settings updated:', settings);
-                  if (settings?.appName) setAppName(settings.appName);
+                onSettingsUpdate={(multiServerConfig) => {
+                  console.log('Settings updated:', multiServerConfig);
+                  // Get the active profile and use its app name
+                  const activeProfile = multiServerConfig?.profiles.find(p => p.id === multiServerConfig.activeProfileId);
+                  if (activeProfile?.settings?.appName) {
+                    setAppName(activeProfile.settings.appName);
+                  }
                   fetchTopics();
                 }}
               />
@@ -170,5 +196,6 @@ export default function KafkaVisualizer() {
         </div>
       </div>
     </div>
+  </div>
   );
 }
