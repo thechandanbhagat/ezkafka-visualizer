@@ -7,7 +7,10 @@ export async function DELETE(
 ) {
   try {
     const { name } = await params;
-    const kafkaService = getKafkaService();
+    const { searchParams } = new URL(request.url);
+    const profileId = searchParams.get('profileId') || undefined;
+    
+    const kafkaService = getKafkaService(profileId);
     await kafkaService.connect();
     await kafkaService.deleteTopic(name);
     

@@ -3,7 +3,7 @@ import { getKafkaService } from '@/lib/kafka';
 
 export async function POST(request: NextRequest) {
   try {
-    const { topic, key, value, headers } = await request.json();
+    const { topic, key, value, headers, profileId } = await request.json();
     
     if (!topic || !value) {
       return NextResponse.json(
@@ -12,7 +12,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const kafkaService = getKafkaService();
+    const kafkaService = getKafkaService(profileId);
     await kafkaService.connect();
     await kafkaService.sendMessage(topic, { key, value, headers });
     

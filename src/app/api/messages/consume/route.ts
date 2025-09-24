@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { topics, groupId = 'ezkafka-consumer-group', maxMessages = 10, fromBeginning = false } = requestData;
+    const { topics, groupId = 'ezkafka-consumer-group', maxMessages = 10, fromBeginning = false, profileId } = requestData;
     
     if (!topics || !Array.isArray(topics) || topics.length === 0) {
       return NextResponse.json(
@@ -27,7 +27,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const kafkaService = getKafkaService();
+    const kafkaService = getKafkaService(profileId);
     await kafkaService.connect();
     
     // Use the new consumeMessages method

@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getKafkaService } from '@/lib/kafka';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const kafkaService = getKafkaService();
+    const { searchParams } = new URL(request.url);
+    const profileId = searchParams.get('profileId') || undefined;
+    
+    const kafkaService = getKafkaService(profileId);
     await kafkaService.connect();
     const topics = await kafkaService.getTopicsWithConsumerInfo();
     
@@ -14,7 +17,7 @@ export async function GET() {
       { 
         error: 'Failed to fetch topics',
         message: error instanceof Error ? error.message : 'Unknown error',
-        details: 'Make sure Kafka is running on localhost:9092'
+        details: 'Make sure the selected Kafka server is running and accessible'
       },
       { status: 500 }
     );
@@ -23,7 +26,7 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const { name, partitions, replicationFactor, configs } = await request.json();
+    const { name, partitions, replicationFactor, configs, profileId } = await request.json();
     
     if (!name) {
       return NextResponse.json(
@@ -32,7 +35,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const kafkaService = getKafkaService();
+    const kafkaService = getKafkaService(profileId);
     await kafkaService.connect();
     
     // Create topic with basic parameters
@@ -59,6 +62,7 @@ export async function DELETE(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const topicName = searchParams.get('name');
+    const profileId = searchParams.get('profileId') || undefined;
     
     if (!topicName) {
       return NextResponse.json(
@@ -67,7 +71,7 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    const kafkaService = getKafkaService();
+    const kafkaService = getKafkaService(profileId);
     await kafkaService.connect();
     await kafkaService.deleteTopic(topicName);
     

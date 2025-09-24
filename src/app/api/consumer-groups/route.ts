@@ -1,9 +1,12 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getKafkaService } from '@/lib/kafka';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const kafkaService = getKafkaService();
+    const { searchParams } = new URL(request.url);
+    const profileId = searchParams.get('profileId') || undefined;
+    
+    const kafkaService = getKafkaService(profileId);
     await kafkaService.connect();
     const consumerGroups = await kafkaService.getConsumerGroups();
     
