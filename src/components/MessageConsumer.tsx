@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { Play, Pause, Download, Trash2, Filter, Database, ChevronDown, ChevronUp, Copy } from 'lucide-react';
+import { useActiveProfileId } from '@/contexts/ServerContext';
 
 interface Message {
   topic: string;
@@ -18,6 +19,7 @@ interface MessageConsumerProps {
 }
 
 export default function MessageConsumer({ topics }: MessageConsumerProps) {
+  const selectedProfileId = useActiveProfileId();
   const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isConsuming, setIsConsuming] = useState(false);
@@ -68,7 +70,8 @@ export default function MessageConsumer({ topics }: MessageConsumerProps) {
             topics: selectedTopics,
             groupId: consumerGroup,
             maxMessages: 10,
-            fromBeginning: false // Always false for continuous consumption
+            fromBeginning: false, // Always false for continuous consumption
+            profileId: selectedProfileId
           })
         });
         
@@ -101,7 +104,8 @@ export default function MessageConsumer({ topics }: MessageConsumerProps) {
           topics: selectedTopics,
           groupId: `${consumerGroup}-read-${Date.now()}`, // Unique group ID for reading
           maxMessages: Math.min(maxMessages, 50), // Limit for existing messages
-          fromBeginning: fromBeginning
+          fromBeginning: fromBeginning,
+          profileId: selectedProfileId
         })
       });
       

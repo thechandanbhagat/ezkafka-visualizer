@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Send, MessageSquare, Plus, X, Sparkles, FileJson, Check, AlertCircle, Code, Eye, RefreshCw, Clock, Copy, Eraser, Minimize2, Info } from 'lucide-react';
+import { useActiveProfileId } from '@/contexts/ServerContext';
 
 interface MessageProducerProps {
   topics: string[];
@@ -18,6 +19,7 @@ interface PreviewMessage {
 }
 
 export default function MessageProducer({ topics }: MessageProducerProps) {
+  const selectedProfileId = useActiveProfileId();
   const [selectedTopic, setSelectedTopic] = useState('');
   const [messageKey, setMessageKey] = useState('');
   const [messageValue, setMessageValue] = useState('');
@@ -186,6 +188,7 @@ export default function MessageProducer({ topics }: MessageProducerProps) {
         body: JSON.stringify({
           topic: selectedTopic,
           key: messageKey || undefined,
+          profileId: selectedProfileId,
           value: messageValue,
           headers: Object.keys(headers).length > 0 ? headers : undefined,
         }),
@@ -237,7 +240,8 @@ export default function MessageProducer({ topics }: MessageProducerProps) {
         body: JSON.stringify({ 
           topics: [selectedTopic],
           groupId: 'preview-consumer-group',
-          maxMessages: 10
+          maxMessages: 10,
+          profileId: selectedProfileId
         })
       });
       
@@ -254,7 +258,7 @@ export default function MessageProducer({ topics }: MessageProducerProps) {
     } finally {
       setLoadingPreview(false);
     }
-  }, [selectedTopic]);
+  }, [selectedTopic, selectedProfileId]);
 
   // Auto-fetch preview when topic changes and preview is enabled
   useEffect(() => {

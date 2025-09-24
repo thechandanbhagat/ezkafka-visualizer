@@ -1,11 +1,22 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { 
+  type KafkaSettings, 
+  KafkaServerProfile, 
+  MultiServerConfig
+} from '@/lib/kafka-settings';
 
-interface KafkaSettings {
-  brokers: string[];
+interface KafkaSettingsProps {
+  onSettingsUpdate?: (config: MultiServerConfig) => void;
+}
+
+interface ProfileFormData {
+  name: string;
+  description: string;
+  brokers: string;
   clientId: string;
-  appName?: string;
+  appName: string;
   connectionTimeout: number;
   requestTimeout: number;
   maxMessageSize: number;
@@ -17,18 +28,24 @@ interface KafkaSettings {
   lingerMs: number;
 }
 
-interface KafkaSettingsProps {
-  onSettingsUpdate?: (settings: KafkaSettings) => void;
-}
-
 export default function KafkaSettings({ onSettingsUpdate }: KafkaSettingsProps) {
-  const [settings, setSettings] = useState<KafkaSettings>({
-    brokers: ['localhost:9092'],
+  const [multiServerConfig, setMultiServerConfig] = useState<MultiServerConfig | null>(null);
+  const [activeTab, setActiveTab] = useState<'profiles' | 'current'>('profiles');
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [editingProfile, setEditingProfile] = useState<KafkaServerProfile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  
+  const [formData, setFormData] = useState<ProfileFormData>({
+    name: '',
+    description: '',
+    brokers: 'localhost:9092',
     clientId: 'ezkafka-visualizer',
     appName: 'EZ Kafka Visualizer',
     connectionTimeout: 10000,
     requestTimeout: 30000,
-    maxMessageSize: 1000000,
+    maxMessageSize: 1048576,
     retries: 3,
     initialRetryTime: 300,
     acks: 1,
@@ -37,457 +54,541 @@ export default function KafkaSettings({ onSettingsUpdate }: KafkaSettingsProps) 
     lingerMs: 0
   });
 
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [brokerInput, setBrokerInput] = useState('');
-  const [messageSizePresets, setMessageSizePresets] = useState<Record<string, number>>({
-    small: 1024,      // 1KB - small messages
-    medium: 65536,    // 64KB - medium messages  
-    large: 1048576,   // 1MB - large messages
-    xlarge: 10485760, // 10MB - very large messages
-    max: 100000000    // 100MB - maximum size
-  });
-  const [selectedPreset, setSelectedPreset] = useState<string>('custom');
-
   const fetchSettings = useCallback(async () => {
     try {
+      setLoading(true);
       const response = await fetch('/api/settings');
       const data = await response.json();
+
       if (data.success) {
-        setSettings(data.settings);
-        setBrokerInput(data.settings.brokers.join(', '));
-        
-        // Check if current message size matches a preset
-        const currentSize = data.settings.maxMessageSize;
-        const presetKey = Object.keys(messageSizePresets).find(
-          key => messageSizePresets[key] === currentSize
-        );
-        setSelectedPreset(presetKey || 'custom');
+        setMultiServerConfig(data.multiServerConfig);
       }
     } catch (error) {
-      console.error('Error fetching settings:', error);
+      console.error('Failed to fetch settings:', error);
       setMessage({ type: 'error', text: 'Failed to load settings' });
     } finally {
       setLoading(false);
     }
-  }, [messageSizePresets]);
+  }, []);
 
   useEffect(() => {
     fetchSettings();
   }, [fetchSettings]);
 
-  const handleSaveSettings = async () => {
+  const handleCreateProfile = async () => {
+    if (!formData.name.trim()) {
+      setMessage({ type: 'error', text: 'Profile name is required' });
+      return;
+    }
+
     setSaving(true);
     setMessage(null);
 
     try {
-      // Parse brokers from input
-      const brokers = brokerInput
+      const brokers = formData.brokers
         .split(',')
         .map(broker => broker.trim())
         .filter(broker => broker.length > 0);
 
-      const updatedSettings = { ...settings, brokers };
+      const settings: KafkaSettings = {
+        brokers,
+        clientId: formData.clientId,
+        appName: formData.appName,
+        connectionTimeout: formData.connectionTimeout,
+        requestTimeout: formData.requestTimeout,
+        maxMessageSize: formData.maxMessageSize,
+        retries: formData.retries,
+        initialRetryTime: formData.initialRetryTime,
+        acks: formData.acks,
+        compressionType: formData.compressionType,
+        batchSize: formData.batchSize,
+        lingerMs: formData.lingerMs,
+      };
 
       const response = await fetch('/api/settings', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(updatedSettings),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'createProfile',
+          name: formData.name,
+          description: formData.description,
+          settings
+        }),
       });
 
-      const data = await response.json();
+      const result = await response.json();
 
-      if (data.success) {
-        setSettings(data.settings);
-        setMessage({ type: 'success', text: 'Settings saved successfully!' });
-        onSettingsUpdate?.(data.settings);
+      if (result.success) {
+        setMultiServerConfig(result.multiServerConfig);
+        setShowCreateForm(false);
+        resetForm();
+        setMessage({ type: 'success', text: 'Profile created successfully' });
+        onSettingsUpdate?.(result.multiServerConfig);
       } else {
-        setMessage({ type: 'error', text: data.error || 'Failed to save settings' });
+        setMessage({ type: 'error', text: result.error || 'Failed to create profile' });
       }
     } catch (error) {
-      console.error('Error saving settings:', error);
-      setMessage({ type: 'error', text: 'Failed to save settings' });
+      console.error('Error creating profile:', error);
+      setMessage({ type: 'error', text: 'Failed to create profile' });
     } finally {
       setSaving(false);
     }
   };
 
-  const handleResetSettings = async () => {
+  const handleUpdateProfile = async () => {
+    if (!editingProfile || !formData.name.trim()) {
+      setMessage({ type: 'error', text: 'Profile name is required' });
+      return;
+    }
+
+    setSaving(true);
+    setMessage(null);
+
+    try {
+      const brokers = formData.brokers
+        .split(',')
+        .map(broker => broker.trim())
+        .filter(broker => broker.length > 0);
+
+      const updatedProfile: KafkaServerProfile = {
+        ...editingProfile,
+        name: formData.name,
+        description: formData.description,
+        settings: {
+          brokers,
+          clientId: formData.clientId,
+          appName: formData.appName,
+          connectionTimeout: formData.connectionTimeout,
+          requestTimeout: formData.requestTimeout,
+          maxMessageSize: formData.maxMessageSize,
+          retries: formData.retries,
+          initialRetryTime: formData.initialRetryTime,
+          acks: formData.acks,
+          compressionType: formData.compressionType,
+          batchSize: formData.batchSize,
+          lingerMs: formData.lingerMs,
+        }
+      };
+
+      const response = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'updateProfile',
+          profile: updatedProfile
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setMultiServerConfig(result.multiServerConfig);
+        setEditingProfile(null);
+        resetForm();
+        setMessage({ type: 'success', text: 'Profile updated successfully' });
+        onSettingsUpdate?.(result.multiServerConfig);
+      } else {
+        setMessage({ type: 'error', text: result.error || 'Failed to update profile' });
+      }
+    } catch (error) {
+      console.error('Error updating profile:', error);
+      setMessage({ type: 'error', text: 'Failed to update profile' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteProfile = async (profileId: string) => {
+    if (!confirm('Are you sure you want to delete this profile?')) {
+      return;
+    }
+
     setSaving(true);
     setMessage(null);
 
     try {
       const response = await fetch('/api/settings', {
-        method: 'PUT',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'deleteProfile',
+          profileId
+        }),
       });
 
-      const data = await response.json();
+      const result = await response.json();
 
-      if (data.success) {
-        setSettings(data.settings);
-        setBrokerInput(data.settings.brokers.join(', '));
-        if (data.presets?.messageSizes) {
-          setMessageSizePresets(data.presets.messageSizes);
-          // Check if reset message size matches a preset
-          const presetKey = Object.keys(data.presets.messageSizes).find(
-            key => data.presets.messageSizes[key] === data.settings.maxMessageSize
-          );
-          setSelectedPreset(presetKey || 'custom');
-        }
-        setMessage({ type: 'success', text: 'Settings reset to defaults!' });
-        onSettingsUpdate?.(data.settings);
+      if (result.success) {
+        setMultiServerConfig(result.multiServerConfig);
+        setMessage({ type: 'success', text: 'Profile deleted successfully' });
+        onSettingsUpdate?.(result.multiServerConfig);
       } else {
-        setMessage({ type: 'error', text: data.error || 'Failed to reset settings' });
+        setMessage({ type: 'error', text: result.error || 'Failed to delete profile' });
       }
     } catch (error) {
-      console.error('Error resetting settings:', error);
-      setMessage({ type: 'error', text: 'Failed to reset settings' });
+      console.error('Error deleting profile:', error);
+      setMessage({ type: 'error', text: 'Failed to delete profile' });
     } finally {
       setSaving(false);
     }
   };
 
-  const handleInputChange = (field: keyof KafkaSettings, value: string | number) => {
-    setSettings(prev => ({ ...prev, [field]: value }));
-  };
+  const handleSwitchProfile = async (profileId: string) => {
+    setSaving(true);
+    setMessage(null);
 
-  const handlePresetChange = (presetKey: string) => {
-    setSelectedPreset(presetKey);
-    if (presetKey !== 'custom' && messageSizePresets[presetKey]) {
-      handleInputChange('maxMessageSize', messageSizePresets[presetKey]);
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'switchProfile',
+          profileId
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setMultiServerConfig(result.multiServerConfig);
+        setMessage({ type: 'success', text: 'Profile switched successfully' });
+        onSettingsUpdate?.(result.multiServerConfig);
+      } else {
+        setMessage({ type: 'error', text: result.error || 'Failed to switch profile' });
+      }
+    } catch (error) {
+      console.error('Error switching profile:', error);
+      setMessage({ type: 'error', text: 'Failed to switch profile' });
+    } finally {
+      setSaving(false);
     }
   };
 
-  const formatBytes = (bytes: number) => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  const handleEditProfile = (profile: KafkaServerProfile) => {
+    setEditingProfile(profile);
+    setFormData({
+      name: profile.name,
+      description: profile.description || '',
+      brokers: profile.settings.brokers.join(', '),
+      clientId: profile.settings.clientId,
+      appName: profile.settings.appName || 'EZ Kafka Visualizer',
+      connectionTimeout: profile.settings.connectionTimeout,
+      requestTimeout: profile.settings.requestTimeout,
+      maxMessageSize: profile.settings.maxMessageSize,
+      retries: profile.settings.retries,
+      initialRetryTime: profile.settings.initialRetryTime,
+      acks: profile.settings.acks,
+      compressionType: profile.settings.compressionType,
+      batchSize: profile.settings.batchSize,
+      lingerMs: profile.settings.lingerMs,
+    });
+    setShowCreateForm(true);
   };
 
-  const getMessageSizeDescription = (size: number) => {
-    if (size <= 1024) return 'Tiny messages - Good for simple notifications';
-    if (size <= 10240) return 'Small messages - Suitable for basic data';
-    if (size <= 102400) return 'Medium messages - Good for structured data';
-    if (size <= 1048576) return 'Large messages - Suitable for JSON documents';
-    if (size <= 10485760) return 'X-Large messages - Good for file transfers';
-    if (size <= 52428800) return 'XX-Large messages - For large data payloads';
-    return 'Maximum size - For very large data transfers';
+  const resetForm = () => {
+    setFormData({
+      name: '',
+      description: '',
+      brokers: 'localhost:9092',
+      clientId: 'ezkafka-visualizer',
+      appName: 'EZ Kafka Visualizer',
+      connectionTimeout: 10000,
+      requestTimeout: 30000,
+      maxMessageSize: 1048576,
+      retries: 3,
+      initialRetryTime: 300,
+      acks: 1,
+      compressionType: 'none',
+      batchSize: 16384,
+      lingerMs: 0
+    });
+  };
+
+  const cancelForm = () => {
+    setShowCreateForm(false);
+    setEditingProfile(null);
+    resetForm();
+    setMessage(null);
   };
 
   if (loading) {
     return (
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
-        <div className="flex items-center justify-center h-32">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-6">
+        <div className="flex items-center justify-center">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+          <span className="ml-2 text-gray-600 dark:text-gray-300">Loading settings...</span>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-gray-800 dark:text-white">Kafka Settings</h2>
-        <div className="flex space-x-2">
-          <button
-            onClick={handleResetSettings}
-            disabled={saving}
-            className="px-4 py-2 bg-gray-500 hover:bg-gray-600 text-white rounded-lg transition-colors disabled:opacity-50"
-          >
-            Reset to Defaults
-          </button>
-          <button
-            onClick={handleSaveSettings}
-            disabled={saving}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50"
-          >
-            {saving ? 'Saving...' : 'Save Settings'}
-          </button>
-        </div>
-      </div>
+    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm">
+      <div className="p-6">
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">
+          Kafka Server Configuration
+        </h2>
 
-      {message && (
-        <div className={`mb-4 p-3 rounded-lg ${
-          message.type === 'success' 
-            ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' 
-            : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
-        }`}>
-          {message.text}
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Connection Settings */}
-        <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-600 pb-2">
-            Connection Settings
-          </h3>
-          
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Application Name
-            </label>
-            <input
-              type="text"
-              value={settings.appName || ''}
-              onChange={(e) => handleInputChange('appName' as keyof KafkaSettings, e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
-              placeholder="EZ Kafka Visualizer"
-            />
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              This name appears in the UI and browser title.
-            </p>
+        {/* Message Display */}
+        {message && (
+          <div className={`mb-4 p-4 rounded-md ${
+            message.type === 'success' 
+              ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800'
+              : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800'
+          }`}>
+            {message.text}
           </div>
+        )}
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Kafka Brokers (comma-separated)
-            </label>
-            <input
-              type="text"
-              value={brokerInput}
-              onChange={(e) => setBrokerInput(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
-              placeholder="localhost:9092, broker2:9092"
-            />
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              Enter broker addresses separated by commas
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Client ID
-            </label>
-            <input
-              type="text"
-              value={settings.clientId}
-              onChange={(e) => handleInputChange('clientId', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Connection Timeout (ms)
-            </label>
-            <input
-              type="number"
-              value={settings.connectionTimeout}
-              onChange={(e) => handleInputChange('connectionTimeout', parseInt(e.target.value))}
-              min="1000"
-              max="60000"
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
-            />
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              1,000 - 60,000 ms
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Request Timeout (ms)
-            </label>
-            <input
-              type="number"
-              value={settings.requestTimeout}
-              onChange={(e) => handleInputChange('requestTimeout', parseInt(e.target.value))}
-              min="1000"
-              max="120000"
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
-            />
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              1,000 - 120,000 ms
-            </p>
-          </div>
-        </div>
-
-        {/* Producer Settings */}
-        <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-600 pb-2">
-            Producer Settings
-          </h3>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Max Message Size
-            </label>
-            
-            {/* Preset Selector */}
-            <div className="mb-3">
-              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-                Quick Presets
-              </label>
-              <select
-                value={selectedPreset}
-                onChange={(e) => handlePresetChange(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="custom">Custom Size</option>
-                <option value="small">Small (1 KB) - Simple text messages</option>
-                <option value="medium">Medium (64 KB) - Small JSON documents</option>
-                <option value="large">Large (1 MB) - Large JSON documents</option>
-                <option value="xlarge">X-Large (10 MB) - Files or large payloads</option>
-                <option value="max">Maximum (100 MB) - Very large files</option>
-              </select>
-            </div>
-
-            {/* Custom Input */}
-            <div className="mb-2">
-              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-                {selectedPreset === 'custom' ? 'Custom Size (bytes)' : 'Current Size (bytes)'}
-              </label>
-              <input
-                type="number"
-                value={settings.maxMessageSize}
-                onChange={(e) => {
-                  handleInputChange('maxMessageSize', parseInt(e.target.value));
-                  setSelectedPreset('custom');
-                }}
-                min="1024"
-                max="100000000"
-                disabled={selectedPreset !== 'custom'}
-                className={`w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 ${
-                  selectedPreset !== 'custom' ? 'opacity-50 cursor-not-allowed' : ''
-                }`}
-              />
-            </div>
-            
-            <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
-              <span>Current: {formatBytes(settings.maxMessageSize)}</span>
-              <span>Range: 1KB - 100MB</span>
-            </div>
-            
-            {/* Message Size Description */}
-            <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900/20 rounded-md">
-              <p className="text-xs text-blue-700 dark:text-blue-300">
-                💡 {getMessageSizeDescription(settings.maxMessageSize)}
-              </p>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Acknowledgments (acks)
-            </label>
-            <select
-              value={settings.acks}
-              onChange={(e) => handleInputChange('acks', parseInt(e.target.value))}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
+        {/* Tabs */}
+        <div className="border-b border-gray-200 dark:border-gray-700 mb-6">
+          <nav className="-mb-px flex space-x-8">
+            <button
+              onClick={() => setActiveTab('profiles')}
+              className={`py-2 px-1 border-b-2 font-medium text-sm ${
+                activeTab === 'profiles'
+                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+              }`}
             >
-              <option value={0}>0 - No acknowledgment</option>
-              <option value={1}>1 - Leader acknowledgment</option>
-              <option value={-1}>-1 - All in-sync replicas</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Compression Type
-            </label>
-            <select
-              value={settings.compressionType}
-              onChange={(e) => handleInputChange('compressionType', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
+              Server Profiles
+            </button>
+            <button
+              onClick={() => setActiveTab('current')}
+              className={`py-2 px-1 border-b-2 font-medium text-sm ${
+                activeTab === 'current'
+                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+              }`}
             >
-              <option value="none">None</option>
-              <option value="gzip">Gzip</option>
-              <option value="snappy">Snappy</option>
-              <option value="lz4">LZ4</option>
-              <option value="zstd">Zstandard</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Batch Size (bytes)
-            </label>
-            <input
-              type="number"
-              value={settings.batchSize}
-              onChange={(e) => handleInputChange('batchSize', parseInt(e.target.value))}
-              min="1"
-              max="1000000"
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
-            />
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              Current: {formatBytes(settings.batchSize)}
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Linger Time (ms)
-            </label>
-            <input
-              type="number"
-              value={settings.lingerMs}
-              onChange={(e) => handleInputChange('lingerMs', parseInt(e.target.value))}
-              min="0"
-              max="60000"
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
-            />
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              Time to wait for batching messages (0-60,000 ms)
-            </p>
-          </div>
+              Current Configuration
+            </button>
+          </nav>
         </div>
 
-        {/* Retry Settings */}
-        <div className="space-y-4 md:col-span-2">
-          <h3 className="text-lg font-semibold text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-600 pb-2">
-            Retry Settings
-          </h3>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Max Retries
-              </label>
-              <input
-                type="number"
-                value={settings.retries}
-                onChange={(e) => handleInputChange('retries', parseInt(e.target.value))}
-                min="0"
-                max="10"
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
-              />
+        {/* Profiles Tab */}
+        {activeTab === 'profiles' && multiServerConfig && (
+          <div>
+            {/* Profile List */}
+            <div className="mb-6">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-medium text-gray-900 dark:text-white">
+                  Server Profiles ({multiServerConfig.profiles.length})
+                </h3>
+                <button
+                  onClick={() => setShowCreateForm(true)}
+                  disabled={saving}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-4 py-2 rounded-md text-sm font-medium"
+                >
+                  Add New Profile
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {multiServerConfig.profiles.map((profile) => (
+                  <div
+                    key={profile.id}
+                    className={`border rounded-lg p-4 ${
+                      profile.id === multiServerConfig.activeProfileId
+                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                        : 'border-gray-200 dark:border-gray-700'
+                    }`}
+                  >
+                    <div className="flex justify-between items-start">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-medium text-gray-900 dark:text-white">
+                            {profile.name}
+                          </h4>
+                          {profile.id === multiServerConfig.activeProfileId && (
+                            <span className="bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-300 text-xs px-2 py-1 rounded-full">
+                              Active
+                            </span>
+                          )}
+                        </div>
+                        {profile.description && (
+                          <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                            {profile.description}
+                          </p>
+                        )}
+                        <div className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                          <span className="font-medium">Brokers:</span> {profile.settings.brokers.join(', ')}
+                        </div>
+                        {profile.lastConnected && (
+                          <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                            Last connected: {new Date(profile.lastConnected).toLocaleString()}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex gap-2 ml-4">
+                        {profile.id !== multiServerConfig.activeProfileId && (
+                          <button
+                            onClick={() => handleSwitchProfile(profile.id)}
+                            disabled={saving}
+                            className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-sm font-medium disabled:opacity-50"
+                          >
+                            Switch
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleEditProfile(profile)}
+                          disabled={saving}
+                          className="text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-300 text-sm font-medium disabled:opacity-50"
+                        >
+                          Edit
+                        </button>
+                        {multiServerConfig.profiles.length > 1 && (
+                          <button
+                            onClick={() => handleDeleteProfile(profile.id)}
+                            disabled={saving}
+                            className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 text-sm font-medium disabled:opacity-50"
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Initial Retry Time (ms)
-              </label>
-              <input
-                type="number"
-                value={settings.initialRetryTime}
-                onChange={(e) => handleInputChange('initialRetryTime', parseInt(e.target.value))}
-                min="100"
-                max="10000"
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-          </div>
-        </div>
-      </div>
+            {/* Create/Edit Profile Form */}
+            {showCreateForm && (
+              <div className="border-t pt-6">
+                <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
+                  {editingProfile ? 'Edit Profile' : 'Create New Profile'}
+                </h3>
 
-      {/* Settings Summary */}
-      <div className="mt-6 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
-        <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Current Configuration Summary</h4>
-        <div className="text-xs text-gray-600 dark:text-gray-400 space-y-1">
-          <div>• App Name: {settings.appName || 'EZ Kafka Visualizer'}</div>
-          <div>• Brokers: {settings.brokers.join(', ')}</div>
-          <div>• Client ID: {settings.clientId}</div>
-          <div>• Max Message Size: {formatBytes(settings.maxMessageSize)}</div>
-          <div>• Compression: {settings.compressionType}</div>
-          <div>• Acknowledgments: {settings.acks === -1 ? 'All replicas' : settings.acks === 0 ? 'None' : 'Leader only'}</div>
-          <div>• Retries: {settings.retries} (initial delay: {settings.initialRetryTime}ms)</div>
-        </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Basic Information */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Profile Name *
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.name}
+                      onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
+                      placeholder="e.g., Production Kafka"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Description
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.description}
+                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
+                      placeholder="Optional description"
+                    />
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Brokers *
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.brokers}
+                      onChange={(e) => setFormData({ ...formData, brokers: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
+                      placeholder="localhost:9092, broker2:9092"
+                    />
+                    <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                      Comma-separated list of broker addresses
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Client ID
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.clientId}
+                      onChange={(e) => setFormData({ ...formData, clientId: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Application Name
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.appName}
+                      onChange={(e) => setFormData({ ...formData, appName: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex gap-4 mt-6">
+                  <button
+                    onClick={editingProfile ? handleUpdateProfile : handleCreateProfile}
+                    disabled={saving || !formData.name.trim()}
+                    className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-6 py-2 rounded-md font-medium"
+                  >
+                    {saving ? 'Saving...' : (editingProfile ? 'Update Profile' : 'Create Profile')}
+                  </button>
+                  <button
+                    onClick={cancelForm}
+                    disabled={saving}
+                    className="bg-gray-300 hover:bg-gray-400 dark:bg-gray-600 dark:hover:bg-gray-700 disabled:opacity-50 text-gray-700 dark:text-gray-300 px-6 py-2 rounded-md font-medium"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Current Configuration Tab */}
+        {activeTab === 'current' && multiServerConfig && (
+          <div>
+            {(() => {
+              const activeProfile = multiServerConfig.profiles.find(p => p.id === multiServerConfig.activeProfileId);
+              return activeProfile ? (
+                <div>
+                  <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
+                    Active Profile: {activeProfile.name}
+                  </h3>
+                  <div className="bg-gray-50 dark:bg-gray-900 rounded-lg p-4">
+                    <dl className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Brokers</dt>
+                        <dd className="mt-1 text-sm text-gray-900 dark:text-white">{activeProfile.settings.brokers.join(', ')}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Client ID</dt>
+                        <dd className="mt-1 text-sm text-gray-900 dark:text-white">{activeProfile.settings.clientId}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Connection Timeout</dt>
+                        <dd className="mt-1 text-sm text-gray-900 dark:text-white">{activeProfile.settings.connectionTimeout}ms</dd>
+                      </div>
+                      <div>
+                        <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Request Timeout</dt>
+                        <dd className="mt-1 text-sm text-gray-900 dark:text-white">{activeProfile.settings.requestTimeout}ms</dd>
+                      </div>
+                    </dl>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <p className="text-gray-500 dark:text-gray-400">No active profile found</p>
+                </div>
+              );
+            })()}
+          </div>
+        )}
       </div>
     </div>
   );

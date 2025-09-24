@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   RefreshCw,
   Users,
@@ -10,6 +10,7 @@ import {
   Copy,
   Download,
 } from "lucide-react";
+import { useActiveProfileId } from '@/contexts/ServerContext';
 
 interface ConsumerGroupInfo {
   groupId: string;
@@ -24,6 +25,7 @@ interface ConsumerGroupsProps {
 }
 
 export default function ConsumerGroups({ onRefresh }: ConsumerGroupsProps) {
+  const selectedProfileId = useActiveProfileId();
   const [consumerGroups, setConsumerGroups] = useState<ConsumerGroupInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -35,12 +37,12 @@ export default function ConsumerGroups({ onRefresh }: ConsumerGroupsProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  const fetchConsumerGroups = async () => {
+  const fetchConsumerGroups = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
       
-      const response = await fetch('/api/consumer-groups');
+      const response = await fetch(`/api/consumer-groups?profileId=${encodeURIComponent(selectedProfileId || '')}`);
       if (!response.ok) {
         throw new Error('Failed to fetch consumer groups');
       }
@@ -53,11 +55,11 @@ export default function ConsumerGroups({ onRefresh }: ConsumerGroupsProps) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedProfileId]);
 
   useEffect(() => {
     fetchConsumerGroups();
-  }, []);
+  }, [fetchConsumerGroups]);
 
   // Auto-refresh logic
   useEffect(() => {
@@ -67,7 +69,7 @@ export default function ConsumerGroups({ onRefresh }: ConsumerGroupsProps) {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [autoRefresh, intervalMs]);
+  }, [autoRefresh, intervalMs, fetchConsumerGroups]);
 
   const handleRefresh = () => {
     fetchConsumerGroups();

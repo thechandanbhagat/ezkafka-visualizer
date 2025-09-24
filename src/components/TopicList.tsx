@@ -15,14 +15,16 @@ import {
   X,
 } from "lucide-react";
 import { TopicInfo } from '@/lib/kafka';
+import { useActiveProfileId } from '@/contexts/ServerContext';
 
 interface TopicListProps {
   topics: TopicInfo[];
   loading: boolean;
-  onRefresh: () => void;
+  onRefresh: (profileId?: string) => void;
 }
 
 export default function TopicList({ topics, loading, onRefresh }: TopicListProps) {
+  const selectedProfileId = useActiveProfileId();
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newTopicName, setNewTopicName] = useState('');
   const [newTopicPartitions, setNewTopicPartitions] = useState(1);
@@ -179,6 +181,7 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
           name: newTopicName,
           partitions: newTopicPartitions,
           replicationFactor: 1,
+          profileId: selectedProfileId,
         }),
       });
 
@@ -203,7 +206,7 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
     }
 
     try {
-      const response = await fetch(`/api/topics/${topicName}`, {
+      const response = await fetch(`/api/topics/${topicName}?profileId=${encodeURIComponent(selectedProfileId || '')}`, {
         method: 'DELETE',
       });
 
@@ -211,7 +214,7 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
         throw new Error('Failed to delete topic');
       }
 
-      onRefresh();
+      onRefresh(selectedProfileId);
     } catch (error) {
       console.error('Error deleting topic:', error);
     }
@@ -240,7 +243,7 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
       <div className="flex justify-between items-center">
         <div className="flex space-x-2">
           <button
-            onClick={onRefresh}
+            onClick={() => onRefresh(selectedProfileId)}
             disabled={loading}
             className="inline-flex items-center px-3 py-1.5 border border-slate-300 dark:border-slate-600 text-sm font-medium rounded-md text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50"
           >
