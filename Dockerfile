@@ -48,11 +48,18 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 USER nextjs
 
-EXPOSE 3700
-
-ENV PORT=3700
-# set hostname to localhost
+# Make port configurable via environment variable
+ARG PORT=3700
+ENV PORT=${PORT}
 ENV HOSTNAME="0.0.0.0"
+
+# Kafka configuration environment variables
+ENV KAFKA_BROKERS="localhost:9092"
+ENV KAFKA_CLIENT_ID="ezkafka-visualizer"
+ENV KAFKA_CONNECTION_TIMEOUT=3000
+ENV KAFKA_REQUEST_TIMEOUT=30000
+
+EXPOSE ${PORT}
 
 # server.js is created by next build from the standalone output
 # https://nextjs.org/docs/pages/api-reference/next-config-js/output

@@ -5,14 +5,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - PORT=${APP_PORT:-3700}
     ports:
-      - "3700:3700"
+      - "${HOST_PORT:-3700}:${APP_PORT:-3700}"
     environment:
       - NODE_ENV=production
-      - PORT=3700
+      - PORT=${APP_PORT:-3700}
       - HOSTNAME=0.0.0.0
-      - KAFKA_BROKERS=kafka:9092
-      - KAFKA_CLIENT_ID=ezkafka-visualizer
+      - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka:9092}
+      - KAFKA_CLIENT_ID=${KAFKA_CLIENT_ID:-ezkafka-visualizer}
+      - KAFKA_CONNECTION_TIMEOUT=${KAFKA_CONNECTION_TIMEOUT:-3000}
+      - KAFKA_REQUEST_TIMEOUT=${KAFKA_REQUEST_TIMEOUT:-30000}
     depends_on:
       - kafka
     networks:
