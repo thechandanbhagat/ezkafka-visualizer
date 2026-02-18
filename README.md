@@ -6,20 +6,52 @@ A modern, user-friendly web application for visualizing and managing Apache Kafk
 ![Docker Image Size](https://img.shields.io/docker/image-size/chandanbhagat/ezkafka-visualizer)
 ![GitHub](https://img.shields.io/github/license/thechandanbhagat/ezkafka-visualizer)
 
-## ✨ Features
+## Features
 
-- **🌐 Multi-Server Support**: Connect to multiple Kafka clusters simultaneously
-- **📊 Real-time Topic Management**: View, create, and delete Kafka topics
-- **💻 Message Producer & Consumer**: Send and consume messages with custom keys and headers
-- **👥 Consumer Groups**: Monitor consumer group membership and subscriptions
-- **🔧 Cluster Information**: Monitor broker status and cluster health
-- **🎨 Modern UI**: Clean, responsive interface with dark mode support
-- **🐳 Docker Ready**: Pre-built Docker image with configurable ports
-- **🔧 TypeScript**: Full type safety throughout the application
+- **Multi-Server Support**: Connect to multiple Kafka clusters simultaneously
+- **Real-time Topic Management**: View, create, and delete Kafka topics
+- **Message Producer & Consumer**: Send and consume messages with custom keys and headers
+- **Consumer Groups**: Monitor consumer group membership and subscriptions
+- **Cluster Information**: Monitor broker status and cluster health
+- **Modern UI**: Clean, responsive interface with dark mode support
+- **Docker Ready**: Pre-built Docker image with configurable ports
+- **TypeScript**: Full type safety throughout the application
 
-## 🚀 Quick Start
+## Quick Start
 
-### Option 1: Docker (Recommended)
+### Option 1: NPM Package (Easiest - Global Installation)
+
+**Install globally:**
+```bash
+npm install -g ezkafka-visualizer
+```
+
+**Run with default settings (port 3700):**
+```bash
+ezkafka-visualizer
+```
+
+**Run with custom port:**
+```bash
+ezkafka-visualizer --port 8080
+# or
+PORT=8080 ezkafka-visualizer
+```
+
+**Run with custom Kafka broker:**
+```bash
+ezkafka-visualizer --port 3700 --kafka-brokers kafka.example.com:9092
+```
+
+**See all options:**
+```bash
+ezkafka-visualizer --help
+```
+
+**Access the application:**
+Open your browser and navigate to [http://localhost:3700](http://localhost:3700)
+
+### Option 2: Docker (Recommended for Production)
 
 **Run with default settings:**
 ```bash
@@ -38,7 +70,7 @@ docker run -p 3700:3700 \
   chandanbhagat/ezkafka-visualizer:latest
 ```
 
-### Option 2: Development Setup
+### Option 3: Development Setup
 
 1. **Clone the repository:**
    ```bash
@@ -53,13 +85,23 @@ docker run -p 3700:3700 \
 
 3. **Start development server:**
    ```bash
+   # Default port (3700)
    npm run dev
+   
+   # Custom port using argument
+   npm run dev -- 8080
+   
+   # Custom port using environment variable (Linux/Mac)
+   PORT=8080 npm run dev
+   
+   # Custom port using environment variable (Windows PowerShell)
+   $env:PORT=8080; npm run dev
    ```
 
 4. **Open your browser:**
-   Navigate to [http://localhost:3700](http://localhost:3700)
+   Navigate to [http://localhost:3700](http://localhost:3700) (or your custom port)
 
-## 🐳 Docker Usage
+## Docker Usage
 
 ### Pre-built Image
 
@@ -92,12 +134,12 @@ docker-compose up
 
 For detailed Docker instructions, see [DOCKER.md](DOCKER.md).
 
-## 🛠️ Prerequisites
+## Prerequisites
 
 - **Docker**: For containerized deployment (recommended)
 - **OR Node.js 18+**: For local development
 - **Apache Kafka**: Running locally or remotely (KRaft mode supported)
-## 📁 Project Structure
+## Project Structure
 
 ```
 src/
@@ -132,15 +174,33 @@ src/
     └── globals.d.ts      # TypeScript declarations
 ```
 
-## 🔧 Available Scripts
+## Available Scripts
 
+### NPM Package Commands
+- `ezkafka-visualizer` - Start the visualizer with default settings
+- `ezkafka-visualizer -p 8080` - Start on custom port
+- `ezkafka-visualizer --help` - Show all CLI options
+
+### NPM Package Management
+```bash
+# Update to latest version
+npm update -g ezkafka-visualizer
+
+# Check current version
+npm list -g ezkafka-visualizer
+
+# Uninstall
+npm uninstall -g ezkafka-visualizer
+```
+
+### Development Scripts
 - `npm run dev` - Start development server on port 3700
 - `npm run build` - Build the application for production
 - `npm run start` - Start production server
 - `npm run lint` - Run ESLint
 - `docker-compose up` - Start with Docker Compose
 
-## 🌐 API Endpoints
+## API Endpoints
 
 ### Topics
 - `GET /api/topics?profileId=<id>` - List all topics
@@ -160,7 +220,7 @@ src/
 - `GET /api/settings` - Get server configuration
 - `POST /api/settings` - Update server configuration
 
-## 🚀 Usage Examples
+## Usage Examples
 
 ### Multi-Server Configuration
 The application supports connecting to multiple Kafka clusters:
@@ -190,7 +250,7 @@ docker run -d \
   chandanbhagat/ezkafka-visualizer:latest
 ```
 
-## 🛠️ Technologies Used
+## Technologies Used
 
 - **Next.js 15** - React framework with App Router and Turbopack
 - **TypeScript** - Type-safe JavaScript with strict mode
@@ -200,7 +260,7 @@ docker run -d \
 - **Lucide React** - Beautiful & consistent SVG icons
 - **Docker** - Containerized deployment with Alpine Linux
 
-## 🤝 Contributing
+## Contributing
 
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feature/amazing-feature`)
@@ -208,11 +268,11 @@ docker run -d \
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## 📝 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🔗 Links
+## Links
 
 - **Docker Hub**: [chandanbhagat/ezkafka-visualizer](https://hub.docker.com/r/chandanbhagat/ezkafka-visualizer)
 - **GitHub**: [thechandanbhagat/ezkafka-visualizer](https://github.com/thechandanbhagat/ezkafka-visualizer)
@@ -220,4 +280,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-Made with ❤️ by [Chandan Bhagat](https://github.com/thechandanbhagat)
+Made by [Chandan Bhagat](https://github.com/thechandanbhagat)
