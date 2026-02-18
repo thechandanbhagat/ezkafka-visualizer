@@ -140,6 +140,65 @@ export class KafkaService {
     }
   }
 
+  async cleanupMessages(topicName: string): Promise<{ deletedPartitions: number; totalMessages: number }> {
+    try {
+      // First, get the topic metadata to preserve its configuration
+      const metadata = await this.admin.fetchTopicMetadata({ topics: [topicName] });
+      const topic = metadata.topics.find(t => t.name === topicName);
+      
+      if (!topic) {
+        throw new Error(`Topic ${topicName} not found`);
+      }
+
+      // Get the current offsets for all partitions to calculate message count
+      type PartitionOffset = { partition: number; offset?: string; high?: string; low?: string };
+      const offsets: PartitionOffset[] = await this.admin.fetchTopicOffsets(topicName) as unknown as PartitionOffset[];
+      
+      // Calculate total messages before deletion
+      let totalMessages = 0;
+      offsets.forEach((p: PartitionOffset) => {
+        const high = parseInt((p.high ?? p.offset ?? '0') as string, 10);
+        const low = parseInt((p.low ?? '0') as string, 10);
+        const delta = high - low;
+        totalMessages += isNaN(delta) ? 0 : Math.max(0, delta);
+      });
+
+      // Store topic configuration
+      const partitionCount = topic.partitions.length;
+      const replicationFactor = topic.partitions[0]?.replicas.length || 1;
+
+      // For large datasets, topic recreation is more reliable than deleteTopicRecords
+      // Delete the topic
+      await this.admin.deleteTopics({
+        topics: [topicName],
+        timeout: 30000,
+      });
+
+      // Wait a bit for deletion to complete
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Recreate the topic with the same configuration
+      await this.admin.createTopics({
+        topics: [{
+          topic: topicName,
+          numPartitions: partitionCount,
+          replicationFactor: replicationFactor,
+        }],
+        timeout: 30000,
+      });
+
+      console.log(`Cleaned up messages from topic ${topicName}: ${partitionCount} partitions, ~${totalMessages} messages`);
+      
+      return {
+        deletedPartitions: partitionCount,
+        totalMessages
+      };
+    } catch (error) {
+      console.error(`Error cleaning up messages from topic ${topicName}:`, error);
+      throw error;
+    }
+  }
+
   async getProducer(): Promise<Producer> {
     if (!this.producer) {
       this.producer = this.kafka.producer({
