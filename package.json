@@ -1,12 +1,64 @@
 {
   "name": "ezkafka-visualizer",
-  "version": "0.1.0",
-  "private": true,
+  "version": "1.0.0",
+  "description": "A modern, user-friendly web application for visualizing and managing Apache Kafka clusters",
+  "main": "server.js",
+  "bin": {
+    "ezkafka-visualizer": "./bin/ezkafka-visualizer.js"
+  },
+  "keywords": [
+    "kafka",
+    "visualizer",
+    "dashboard",
+    "monitoring",
+    "cluster",
+    "topics",
+    "messages",
+    "consumer-groups",
+    "kafka-ui",
+    "kafka-tool",
+    "kafka-management",
+    "nextjs",
+    "real-time"
+  ],
+  "author": "Chandan Bhagat <chandan@example.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/thechandanbhagat/ezkafka-visualizer#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thechandanbhagat/ezkafka-visualizer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/thechandanbhagat/ezkafka-visualizer/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "files": [
+    ".next",
+    "public",
+    "bin",
+    "server.js",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "dev": "next dev --turbopack --port 3700",
+    "dev": "node dev.js",
+    "dev:port": "node dev.js",
     "build": "next build",
-    "start": "next start --port 3700",
+    "start": "node server.js",
+    "start:dev": "next start --port 3700",
     "lint": "next lint"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
     "kafkajs": "^2.2.4",
