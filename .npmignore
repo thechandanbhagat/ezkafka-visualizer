@@ -1,0 +1,74 @@
+# Development files
+*.md
+!README.md
+!KUBERNETES_DEPLOYMENT.md
+.vscode/
+.idea/
+copilot-instructions.md
+.github/
+
+# Source files (only include built files)
+src/
+tsconfig.json
+next.config.ts
+next-env.d.ts
+postcss.config.mjs
+eslint.config.mjs
+tailwind.config.*
+
+# Development scripts
+dev.js
+test-*.js
+
+# Docker files
+Dockerfile
+docker-compose.yml
+DOCKER.md
+docker-build.*
+deploy.*
+
+# Kubernetes files (keep directory structure in docs)
+k8s/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Testing
+__tests__/
+*.test.js
+*.test.ts
+*.spec.js
+*.spec.ts
+coverage/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+*.swp
+*.swo
+*~
+
+# Temporary files
+tmp/
+temp/

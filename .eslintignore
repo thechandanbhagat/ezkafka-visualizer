@@ -1,0 +1,6 @@
+bin/
+server.js
+start.js
+dev.js
+.next/
+node_modules/
