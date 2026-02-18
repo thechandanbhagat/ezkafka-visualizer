@@ -13,6 +13,7 @@ import {
   ChevronUp,
   Edit3,
   X,
+  Eraser,
 } from "lucide-react";
 import { TopicInfo } from '@/lib/kafka';
 import { useActiveProfileId } from '@/contexts/ServerContext';
@@ -217,6 +218,31 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
       onRefresh(selectedProfileId);
     } catch (error) {
       console.error('Error deleting topic:', error);
+    }
+  };
+
+  const handleCleanupMessages = async (topicName: string, messageCount?: number) => {
+    const messageInfo = typeof messageCount === 'number' ? ` (${nf.format(messageCount)} messages)` : '';
+    if (!confirm(`Are you sure you want to cleanup all messages from topic "${topicName}"${messageInfo}?\n\nThis will:\n• Delete the topic\n• Recreate it with the same partition and replication settings\n• Remove all messages\n• Preserve topic configuration\n\nConsumer groups will need to reset their offsets.`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/topics/${topicName}/cleanup?profileId=${encodeURIComponent(selectedProfileId || '')}`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || 'Failed to cleanup messages');
+      }
+
+      const result = await response.json();
+      alert(`Successfully cleaned up ${nf.format(result.totalMessages)} messages from ${result.deletedPartitions} partition(s).\n\nTopic has been recreated and is ready for use.`);
+      onRefresh(selectedProfileId);
+    } catch (error) {
+      console.error('Error cleaning up messages:', error);
+      alert(`Error cleaning up messages: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
@@ -453,6 +479,14 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
                             title="Add Partitions"
                           >
                             <BarChart3 className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleCleanupMessages(topic.name, topic.messageCount)}
+                            className="p-1.5 text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/20 rounded-md"
+                            title="Cleanup Messages"
+                            disabled={!topic.messageCount || topic.messageCount === 0}
+                          >
+                            <Eraser className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => handleDeleteTopic(topic.name)}
