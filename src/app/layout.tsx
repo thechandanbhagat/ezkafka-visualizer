@@ -19,6 +19,8 @@ export const metadata: Metadata = {
   description: "Kafka topic management made easy",
 };
 
+import KafkaVisualizer from '@/components/KafkaVisualizer';
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -30,7 +32,8 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased w-full h-full m-0 p-0`}
       >
         <ServerProvider>
-          {children}
+          <KafkaVisualizer />
+          <div className="hidden">{children}</div>
         </ServerProvider>
       </body>
     </html>
