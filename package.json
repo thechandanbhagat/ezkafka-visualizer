@@ -1,6 +1,6 @@
 {
   "name": "ezkafka-visualizer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A modern, user-friendly web application for visualizing and managing Apache Kafka clusters",
   "main": "server.js",
   "bin": {
