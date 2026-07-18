@@ -53,7 +53,29 @@ export class KafkaService {
   private admin: Admin;
   private producer?: Producer;
   private consumers: Map<string, Consumer> = new Map();
+  private consumerBuffers: Map<string, MessageInfo[]> = new Map();
+  private consumerLastAccessed: Map<string, number> = new Map();
+  private cleanupInterval?: NodeJS.Timeout;
   private config: KafkaConfig;
+
+  private startCleanupInterval() {
+    if (this.cleanupInterval) return;
+    this.cleanupInterval = setInterval(() => {
+      const now = Date.now();
+      for (const [groupId, lastAccessed] of this.consumerLastAccessed.entries()) {
+        if (now - lastAccessed > 15000) {
+          const consumer = this.consumers.get(groupId);
+          if (consumer) {
+            consumer.stop().then(() => consumer.disconnect()).catch(console.error);
+            this.consumers.delete(groupId);
+          }
+          this.consumerBuffers.delete(groupId);
+          this.consumerLastAccessed.delete(groupId);
+          console.log(`Cleaned up idle consumer group: ${groupId}`);
+        }
+      }
+    }, 5000);
+  }
 
   constructor(config: KafkaConfig) {
     this.config = config;
@@ -252,33 +274,22 @@ export class KafkaService {
   }
 
   async consumeMessages(topics: string[], groupId: string = 'ezkafka-consumer-group', maxMessages: number = 10, timeoutMs: number = 5000, fromBeginning: boolean = false): Promise<MessageInfo[]> {
-    const messages: MessageInfo[] = [];
-    let consumer: Consumer | null = null;
-    
-    try {
-      consumer = this.kafka.consumer({ groupId });
-      await consumer.connect();
-      await consumer.subscribe({ topics, fromBeginning });
+    this.consumerLastAccessed.set(groupId, Date.now());
+    this.startCleanupInterval();
 
-      // IMPORTANT: Await the run/collect promise so finally executes AFTER completion
-      const result = await new Promise<MessageInfo[]>((resolve, reject) => {
-        let messageCount = 0;
-        let resolved = false;
+    if (!this.consumers.has(groupId)) {
+      try {
+        const consumer = this.kafka.consumer({ groupId });
+        await consumer.connect();
+        await consumer.subscribe({ topics, fromBeginning });
         
-        const timeout = setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
-            resolve(messages);
-          }
-        }, timeoutMs);
-        
-        consumer!.run({
+        this.consumerBuffers.set(groupId, []);
+        this.consumers.set(groupId, consumer);
+
+        consumer.run({
           eachMessage: async ({ topic, partition, message, heartbeat }) => {
             try {
               await heartbeat();
-              
-              if (resolved) return;
-              
               const messageInfo: MessageInfo = {
                 topic,
                 partition,
@@ -294,51 +305,38 @@ export class KafkaService {
                 ) : undefined
               };
               
-              messages.push(messageInfo);
-              messageCount++;
-              
-              // If we've collected enough messages, resolve early
-              if (messageCount >= maxMessages && !resolved) {
-                resolved = true;
-                clearTimeout(timeout);
-                resolve(messages);
+              const buffer = this.consumerBuffers.get(groupId) || [];
+              buffer.push(messageInfo);
+              if (buffer.length > 500) {
+                buffer.shift();
               }
             } catch (error) {
-              if (!resolved) {
-                resolved = true;
-                clearTimeout(timeout);
-                reject(error);
-              }
+              console.error('Error processing message:', error);
             }
           },
-        }).catch((error) => {
-          if (!resolved) {
-            resolved = true;
-            clearTimeout(timeout);
-            reject(error);
-          }
-        });
-      });
+        }).catch(console.error);
 
-      // Cleanly stop the consumer after collection
-  try { await consumer.stop(); } catch { /* noop */ }
-      return result;
-    } catch (error) {
-      console.error(`Error consuming messages from topics ${topics.join(', ')}:`, error);
-      throw error;
-    } finally {
-      if (consumer) {
-        try {
-          // Ensure the runner is stopped before disconnect
-          await consumer.stop();
-        } catch { /* noop */ }
-        try {
-          await consumer.disconnect();
-        } catch (error) {
-          console.error('Error disconnecting consumer:', error);
-        }
+        // Wait a bit for initial fetch
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } catch (error) {
+        console.error(`Error starting consumer for group ${groupId}:`, error);
+        throw error;
+      }
+    } else {
+      // If consumer already exists, wait up to timeoutMs if buffer is empty
+      let waited = 0;
+      while (waited < timeoutMs) {
+        const buffer = this.consumerBuffers.get(groupId) || [];
+        if (buffer.length > 0) break;
+        await new Promise(resolve => setTimeout(resolve, 500));
+        waited += 500;
       }
     }
+
+    const buffer = this.consumerBuffers.get(groupId) || [];
+    const messagesToReturn = [...buffer].slice(-maxMessages);
+    this.consumerBuffers.set(groupId, []); // clear buffer after returning
+    return messagesToReturn;
   }
 
   async getClusterInfo(): Promise<{ topics: number; metadata: unknown }> {

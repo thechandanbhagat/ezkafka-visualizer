@@ -14,6 +14,7 @@ import {
   Edit3,
   X,
   Eraser,
+  Search,
 } from "lucide-react";
 import { TopicInfo } from '@/lib/kafka';
 import { useActiveProfileId } from '@/contexts/ServerContext';
@@ -38,6 +39,8 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
   const [savingConfig, setSavingConfig] = useState(false);
   const [configEditorLoading, setConfigEditorLoading] = useState(false);
   const [configEditorError, setConfigEditorError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [cleaningAll, setCleaningAll] = useState(false);
   const nf = new Intl.NumberFormat();
 
   // Layman-friendly descriptions for common Kafka topic configuration keys
@@ -222,11 +225,6 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
   };
 
   const handleCleanupMessages = async (topicName: string, messageCount?: number) => {
-    const messageInfo = typeof messageCount === 'number' ? ` (${nf.format(messageCount)} messages)` : '';
-    if (!confirm(`Are you sure you want to cleanup all messages from topic "${topicName}"${messageInfo}?\n\nThis will:\n• Delete the topic\n• Recreate it with the same partition and replication settings\n• Remove all messages\n• Preserve topic configuration\n\nConsumer groups will need to reset their offsets.`)) {
-      return;
-    }
-
     try {
       const response = await fetch(`/api/topics/${topicName}/cleanup?profileId=${encodeURIComponent(selectedProfileId || '')}`, {
         method: 'POST',
@@ -237,8 +235,7 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
         throw new Error(error.message || 'Failed to cleanup messages');
       }
 
-      const result = await response.json();
-      alert(`Successfully cleaned up ${nf.format(result.totalMessages)} messages from ${result.deletedPartitions} partition(s).\n\nTopic has been recreated and is ready for use.`);
+      // Success is visual when the topic count drops to 0 via refresh
       onRefresh(selectedProfileId);
     } catch (error) {
       console.error('Error cleaning up messages:', error);
@@ -246,224 +243,281 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
     }
   };
 
+  const handleCleanupAllTopics = async () => {
+    if (!confirm('Are you sure you want to purge all messages from ALL topics? This action cannot be undone and may take some time depending on the number of topics.')) {
+      return;
+    }
+
+    setCleaningAll(true);
+    try {
+      // Filter out internal topics like __consumer_offsets
+      const userTopics = topics.filter(t => !t.name.startsWith('_'));
+      for (const topic of userTopics) {
+        // Only clean if there's potentially something to clean or we don't know the count
+        if (topic.messageCount !== 0) {
+          await fetch(`/api/topics/${encodeURIComponent(topic.name)}/cleanup?profileId=${encodeURIComponent(selectedProfileId || '')}`, {
+            method: 'POST',
+          });
+        }
+      }
+      onRefresh(selectedProfileId);
+    } catch (error) {
+      console.error('Error cleaning up all topics:', error);
+      alert('An error occurred while cleaning up topics. Please refresh and try again.');
+    } finally {
+      setCleaningAll(false);
+    }
+  };
+
+  const filteredTopics = topics.filter(topic =>
+    topic.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   return (
     <div className="space-y-4">
       {/* Compact Header */}
-      <div className="h-12 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 bg-slate-100 dark:bg-slate-800 rounded-md flex items-center justify-center">
-            <Database className="w-4 h-4 text-slate-700 dark:text-slate-300" />
+      <div className="h-16 px-5 dev-card flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div className="w-10 h-10 bg-zinc-900 border border-zinc-800 flex items-center justify-center">
+            <Database className="w-5 h-5 text-emerald-500" />
           </div>
-          <div className="leading-tight">
-            <h1 className="text-sm font-semibold">Kafka Topics</h1>
-            <p className="text-[11px] text-slate-500">Manage topics and partitions</p>
+          <div>
+            <h1 className="text-lg font-bold font-mono text-zinc-100 tracking-tight">KAFKA_TOPICS</h1>
+            <p className="text-xs font-mono text-zinc-500 uppercase">Manage topics and partitions</p>
           </div>
         </div>
-        <div className="text-right">
-          <div className="text-sm font-semibold">{topics.length}</div>
-          <div className="text-[10px] text-slate-500">Topics</div>
+        <div className="text-right flex flex-col items-end">
+          <div className="text-xl font-bold font-mono text-emerald-400 leading-none">{topics.length}</div>
+          <div className="text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest mt-1">TOTAL_TOPICS</div>
         </div>
       </div>
 
       {/* Action Bar */}
-      <div className="flex justify-between items-center">
-        <div className="flex space-x-2">
+      <div className="flex justify-between items-center px-1">
+        <div className="flex items-center space-x-3 flex-1">
           <button
             onClick={() => onRefresh(selectedProfileId)}
             disabled={loading}
-            className="inline-flex items-center px-3 py-1.5 border border-slate-300 dark:border-slate-600 text-sm font-medium rounded-md text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50"
+            className="dev-btn inline-flex items-center whitespace-nowrap"
           >
-            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
+            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin text-emerald-500' : ''}`} />
+            REFRESH
+          </button>
+          <div className="relative max-w-sm w-full">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="SEARCH_TOPICS..."
+              className="w-full !pl-10 pr-4 dev-input py-2"
+            />
+          </div>
+        </div>
+        <div className="flex items-center space-x-3 ml-4">
+          <button
+            onClick={handleCleanupAllTopics}
+            disabled={cleaningAll || topics.length === 0}
+            className="dev-btn inline-flex items-center whitespace-nowrap !text-amber-500 hover:!text-amber-400 hover:!border-amber-500"
+            title="Purge messages from all topics"
+          >
+            <Eraser className={`w-4 h-4 mr-2 ${cleaningAll ? 'animate-pulse' : ''}`} />
+            {cleaningAll ? 'PURGING...' : 'PURGE_ALL'}
+          </button>
+          <button
+            onClick={() => setShowCreateForm(true)}
+            className="dev-btn-primary inline-flex items-center whitespace-nowrap"
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            CREATE_TOPIC
           </button>
         </div>
-        <button
-          onClick={() => setShowCreateForm(true)}
-          className="inline-flex items-center px-3 py-1.5 border border-transparent text-sm font-medium rounded-md text-white bg-slate-900 dark:bg-slate-700 hover:bg-black/80"
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          Create Topic
-        </button>
       </div>
 
       {/* Create Topic Form */}
       {showCreateForm && (
-        <div className="bg-white dark:bg-slate-900 rounded-md border border-slate-200 dark:border-slate-800">
-          <div className="p-4">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-slate-900 dark:text-white">Create New Topic</h3>
-              <button
-                onClick={() => setShowCreateForm(false)}
-                className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-md hover:bg-slate-100 dark:hover:bg-slate-800"
-              >
-                <Plus className="w-4 h-4 rotate-45" />
-              </button>
+        <div className="dev-card p-5 animate-in fade-in slide-in-from-top-4 duration-300">
+          <div className="flex items-center justify-between mb-5 border-b border-zinc-800 pb-3">
+            <h3 className="text-sm font-bold font-mono text-zinc-100 uppercase tracking-widest">Create New Topic</h3>
+            <button
+              onClick={() => setShowCreateForm(false)}
+              className="p-1.5 text-zinc-500 hover:text-emerald-400 hover:bg-zinc-900 transition-colors rounded-none focus:outline-none"
+            >
+              <Plus className="w-5 h-5 rotate-45" />
+            </button>
+          </div>
+          
+          <form onSubmit={handleCreateTopic} className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="block text-xs font-mono font-bold text-zinc-400 uppercase tracking-wider">
+                  Topic Name
+                </label>
+                <input
+                  type="text"
+                  value={newTopicName}
+                  onChange={(e) => setNewTopicName(e.target.value)}
+                  placeholder="Enter topic name"
+                  className="w-full dev-input"
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="block text-xs font-mono font-bold text-zinc-400 uppercase tracking-wider">
+                  Partitions
+                </label>
+                <input
+                  type="number"
+                  value={newTopicPartitions}
+                  onChange={(e) => setNewTopicPartitions(parseInt(e.target.value) || 1)}
+                  min="1"
+                  className="w-full dev-input"
+                />
+              </div>
             </div>
             
-            <form onSubmit={handleCreateTopic} className="space-y-3">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                    Topic Name
-                  </label>
-                  <input
-                    type="text"
-                    value={newTopicName}
-                    onChange={(e) => setNewTopicName(e.target.value)}
-                    placeholder="Enter topic name"
-                    className="w-full px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-slate-500 focus:border-transparent"
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                    Partitions
-                  </label>
-                  <input
-                    type="number"
-                    value={newTopicPartitions}
-                    onChange={(e) => setNewTopicPartitions(parseInt(e.target.value) || 1)}
-                    min="1"
-                    className="w-full px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-slate-500 focus:border-transparent"
-                  />
-                </div>
-              </div>
-              
-              <div className="flex justify-end space-x-2 pt-3 border-t border-slate-200 dark:border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setShowCreateForm(false)}
-                  className="px-3 py-1.5 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 rounded-md hover:bg-slate-50 dark:hover:bg-slate-800 font-medium"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={creating}
-                  className="px-3 py-1.5 bg-slate-900 dark:bg-slate-700 text-white rounded-md hover:bg-black/80 disabled:opacity-50 font-medium"
-                >
-                  {creating ? 'Creating...' : 'Create Topic'}
-                </button>
-              </div>
-            </form>
-          </div>
+            <div className="flex justify-end space-x-3 pt-4 border-t border-zinc-800 mt-6">
+              <button
+                type="button"
+                onClick={() => setShowCreateForm(false)}
+                className="dev-btn"
+              >
+                CANCEL
+              </button>
+              <button
+                type="submit"
+                disabled={creating}
+                className="dev-btn-primary disabled:opacity-50"
+              >
+                {creating ? 'CREATING...' : 'CREATE_TOPIC'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
       {/* Topics List */}
       {loading && topics.length === 0 ? (
         <div className="text-center py-12">
-          <div className="w-16 h-16 bg-purple-100 dark:bg-purple-900/20 rounded-2xl flex items-center justify-center mx-auto mb-4">
-            <div className="animate-spin w-8 h-8 border-3 border-purple-600 border-t-transparent rounded-full"></div>
+          <div className="w-16 h-16 bg-zinc-900 border border-zinc-800 flex items-center justify-center mx-auto mb-4">
+            <div className="animate-spin w-8 h-8 border-2 border-zinc-800 border-t-emerald-500 rounded-none"></div>
           </div>
-          <p className="text-lg font-medium text-slate-700 dark:text-slate-300">Loading topics...</p>
+          <p className="text-sm font-mono font-bold text-zinc-500 uppercase tracking-widest">Loading topics...</p>
         </div>
       ) : topics.length === 0 ? (
-        <div className="text-center py-16">
-          <div className="w-24 h-24 bg-slate-100 dark:bg-slate-700 rounded-2xl flex items-center justify-center mx-auto mb-6">
-            <Database className="w-12 h-12 text-slate-400" />
+        <div className="text-center py-16 dev-card">
+          <div className="w-24 h-24 bg-zinc-900 border border-zinc-800 flex items-center justify-center mx-auto mb-6">
+            <Database className="w-10 h-10 text-zinc-600" />
           </div>
-          <h3 className="text-xl font-semibold text-slate-900 dark:text-white mb-2">No Topics Found</h3>
-          <p className="text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-            Create your first topic to start streaming data with Kafka.
+          <h3 className="text-sm font-mono font-bold text-zinc-300 mb-2 uppercase tracking-widest">No Topics Found</h3>
+          <p className="text-xs font-mono text-zinc-500 max-w-md mx-auto">
+            Create your first topic to start streaming data.
           </p>
         </div>
       ) : (
-        <div className="bg-white dark:bg-slate-900 rounded-md border border-slate-200 dark:border-slate-800 overflow-hidden">
+        <div className="dev-card overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-slate-200 dark:divide-slate-800 text-sm">
-              <thead className="bg-slate-50 dark:bg-slate-900">
+            <table className="min-w-full divide-y divide-zinc-800 text-sm">
+              <thead className="bg-zinc-950">
                 <tr>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                    Topic Name
+                  <th className="px-5 py-4 text-left text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">
+                    TOPIC_NAME
                   </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                    Partitions
+                  <th className="px-5 py-4 text-left text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">
+                    PARTITIONS
                   </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                    Replication
+                  <th className="px-5 py-4 text-left text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">
+                    REPLICATION
                   </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                    Messages
+                  <th className="px-5 py-4 text-left text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">
+                    MESSAGES
                   </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                    Consumers
+                  <th className="px-5 py-4 text-left text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">
+                    CONSUMERS
                   </th>
-                  <th className="px-3 py-2 text-right text-[11px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                    Actions
+                  <th className="px-5 py-4 text-right text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">
+                    ACTIONS
                   </th>
                 </tr>
               </thead>
-              <tbody className="bg-white dark:bg-slate-900 divide-y divide-slate-200 dark:divide-slate-800">
-                {topics.map((topic) => (
-                  <Fragment key={topic.name}>
-                    <tr className="hover:bg-slate-50 dark:hover:bg-slate-800">
-                      <td className="px-3 py-3 whitespace-nowrap">
+              <tbody className="bg-black divide-y divide-zinc-900">
+                {filteredTopics.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-5 py-8 text-center text-zinc-500 font-mono text-xs uppercase tracking-widest">
+                      NO_TOPICS_MATCH_SEARCH
+                    </td>
+                  </tr>
+                ) : (
+                  filteredTopics.map((topic) => (
+                    <Fragment key={topic.name}>
+                    <tr className="hover:bg-zinc-900/50 transition-colors group">
+                      <td className="px-5 py-4 whitespace-nowrap">
                         <div className="flex items-center">
                           <button
                             onClick={() => toggleTopic(topic.name)}
-                            className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md mr-2"
+                            className="p-1.5 hover:bg-zinc-800 mr-3 transition-colors rounded-none focus:outline-none"
                             title={expandedTopics.has(topic.name) ? 'Collapse' : 'Expand'}
                           >
                             {expandedTopics.has(topic.name) ? (
-                              <ChevronUp className="w-4 h-4 text-slate-600 dark:text-slate-400" />
+                              <ChevronUp className="w-4 h-4 text-zinc-500" />
                             ) : (
-                              <ChevronDown className="w-4 h-4 text-slate-600 dark:text-slate-400" />
+                              <ChevronDown className="w-4 h-4 text-zinc-500" />
                             )}
                           </button>
-                          <div className="w-7 h-7 bg-slate-100 dark:bg-slate-800 rounded-md flex items-center justify-center mr-2">
-                            <MessageCircle className="w-4 h-4 text-slate-700 dark:text-slate-300" />
+                          <div className="w-8 h-8 bg-zinc-950 border border-zinc-800 flex items-center justify-center mr-3 group-hover:border-emerald-500/50 transition-colors">
+                            <Database className="w-4 h-4 text-emerald-500/70" />
                           </div>
                           <div>
-                            <div className="text-sm font-medium text-slate-900 dark:text-white">{topic.name}</div>
-                            <div className="text-xs text-slate-500 dark:text-slate-400">Kafka Topic</div>
+                            <div className="text-sm font-bold font-mono text-zinc-100 tracking-tight">{topic.name}</div>
+                            <div className="text-[10px] font-mono text-zinc-600 mt-0.5 uppercase tracking-widest">TOPIC_OBJ</div>
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 py-3 whitespace-nowrap">
+                      <td className="px-5 py-4 whitespace-nowrap">
                         <div className="flex items-center">
-                          <BarChart3 className="w-4 h-4 text-slate-400 mr-2" />
-                          <span className="text-sm font-medium text-slate-900 dark:text-white">{topic.partitions}</span>
+                          <span className="dev-badge">
+                            {topic.partitions}
+                          </span>
                         </div>
                       </td>
-                      <td className="px-3 py-3 whitespace-nowrap">
+                      <td className="px-5 py-4 whitespace-nowrap">
                         <div className="flex items-center">
-                          <Users className="w-4 h-4 text-slate-400 mr-2" />
-                          <span className="text-sm font-medium text-slate-900 dark:text-white">{topic.replicationFactor}</span>
+                          <span className="dev-badge">
+                            {topic.replicationFactor}
+                          </span>
                         </div>
                       </td>
-                      <td className="px-3 py-3 whitespace-nowrap">
+                      <td className="px-5 py-4 whitespace-nowrap">
                         <div className="flex items-center">
-                          <MessageCircle className="w-4 h-4 text-slate-400 mr-2" />
-                          <span className="text-sm font-medium text-slate-900 dark:text-white">
+                          <span className="text-sm font-bold text-zinc-300 font-mono">
                             {typeof topic.messageCount === 'number' ? nf.format(topic.messageCount) : '—'}
                           </span>
                         </div>
                       </td>
-                      <td className="px-3 py-3 whitespace-nowrap">
+                      <td className="px-5 py-4 whitespace-nowrap">
                         <div className="flex items-center">
-                          <div className="flex items-center space-x-1">
-                            <div className={`w-2 h-2 rounded-full ${
-                              (topic.connectedConsumers || 0) > 0 ? 'bg-green-400' : 'bg-slate-300'
+                          <div className="flex items-center space-x-1.5">
+                            <div className={`w-2 h-2 shadow-[0_0_8px_rgba(16,185,129,0.5)] ${
+                              (topic.connectedConsumers || 0) > 0 ? 'bg-emerald-500' : 'bg-zinc-700 shadow-none'
                             }`}></div>
-                            <span className="text-sm font-medium text-slate-900 dark:text-white">
+                            <span className="text-sm font-bold font-mono text-zinc-300">
                               {topic.connectedConsumers || 0}
                             </span>
                           </div>
                           {topic.consumerGroups && topic.consumerGroups.length > 0 && (
                             <div className="ml-2" title={`Consumer Groups: ${topic.consumerGroups.join(', ')}`}>
-                              <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
+                              <span className="dev-badge text-cyan-500 border-cyan-900 bg-cyan-950/30">
                                 {topic.consumerGroups.length}
                               </span>
                             </div>
                           )}
                         </div>
                       </td>
-                      <td className="px-3 py-3 whitespace-nowrap text-right">
-                        <div className="flex items-center justify-end space-x-1">
+                      <td className="px-5 py-4 whitespace-nowrap text-right">
+                        <div className="flex items-center justify-end space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button
                             onClick={() => openConfigEditor(topic.name)}
-                            className="p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-md"
+                            className="p-1.5 text-zinc-500 hover:text-emerald-400 hover:bg-zinc-900 rounded-none transition-colors"
                             title="Edit Configuration"
                           >
                             <Edit3 className="w-4 h-4" />
@@ -475,14 +529,14 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
                                 addPartitions(topic.name, parseInt(newCount));
                               }
                             }}
-                            className="p-1.5 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-md"
+                            className="p-1.5 text-zinc-500 hover:text-cyan-400 hover:bg-zinc-900 rounded-none transition-colors"
                             title="Add Partitions"
                           >
                             <BarChart3 className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => handleCleanupMessages(topic.name, topic.messageCount)}
-                            className="p-1.5 text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/20 rounded-md"
+                            className="p-1.5 text-zinc-500 hover:text-amber-500 hover:bg-zinc-900 rounded-none transition-colors"
                             title="Cleanup Messages"
                             disabled={!topic.messageCount || topic.messageCount === 0}
                           >
@@ -490,7 +544,7 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
                           </button>
                           <button
                             onClick={() => handleDeleteTopic(topic.name)}
-                            className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md"
+                            className="p-1.5 text-zinc-500 hover:text-red-500 hover:bg-zinc-900 rounded-none transition-colors"
                             title="Delete Topic"
                           >
                             <Trash2 className="w-4 h-4" />
@@ -500,26 +554,26 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
                     </tr>
                     {expandedTopics.has(topic.name) && (
                       <tr>
-                        <td colSpan={6} className="px-3 py-3 bg-slate-50 dark:bg-slate-900/60">
-                          <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
-                            <h4 className="text-sm font-semibold text-slate-900 dark:text-white mb-2">Configuration</h4>
+                        <td colSpan={6} className="px-5 py-4 bg-zinc-950 border-y border-zinc-900">
+                          <div className="pt-2">
+                            <h4 className="text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest mb-3">CONFIGURATION_SETTINGS</h4>
                             {!topicConfigs[topic.name] ? (
-                              <div className="text-xs text-slate-500">Loading configuration…</div>
+                              <div className="text-xs font-mono text-zinc-500 italic">LOADING...</div>
                             ) : (
-                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                                 {Object.entries(topicConfigs[topic.name]).map(([key, value]) => (
-                                  <div key={key} className="p-2 bg-white dark:bg-slate-800 rounded-md border border-slate-200 dark:border-slate-700">
-                                    <div className="text-xs font-medium text-slate-700 dark:text-slate-300 mb-1 flex items-center gap-1">
-                                      <span>{key}</span>
+                                  <div key={key} className="p-3 bg-black border border-zinc-800 hover:border-zinc-700 transition-colors">
+                                    <div className="text-[10px] font-mono font-bold text-zinc-500 mb-1 flex items-center gap-1.5">
+                                      <span className="truncate">{key}</span>
                                       <span
-                                        className="inline-flex items-center justify-center w-4 h-4 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-help"
+                                        className="inline-flex items-center justify-center w-3 h-3 text-zinc-600 hover:text-emerald-500 cursor-help transition-colors"
                                         title={getConfigTooltip(key)}
                                         aria-label={`Info about ${key}`}
                                       >
-                                        i
+                                        [?]
                                       </span>
                                     </div>
-                                    <div className="text-xs text-slate-600 dark:text-slate-400 font-mono break-words">{value || 'default'}</div>
+                                    <div className="text-xs font-bold text-zinc-300 font-mono truncate">{value || 'default'}</div>
                                   </div>
                                 ))}
                               </div>
@@ -529,7 +583,8 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
                       </tr>
                     )}
                   </Fragment>
-                ))}
+                ))
+              )}
               </tbody>
             </table>
           </div>
@@ -538,40 +593,43 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
 
       {/* Configuration Editor Modal */}
       {showConfigEditor && selectedTopic && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-md border border-slate-200 dark:border-slate-800 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="p-4 border-b border-slate-200 dark:border-slate-800">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+          <div className="dev-card max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl border-emerald-900/30">
+            <div className="p-5 border-b border-zinc-800 bg-zinc-950">
               <div className="flex items-center justify-between">
-                <h3 className="text-xl font-semibold text-slate-900 dark:text-white">
-                  Edit Configuration: {selectedTopic}
+                <h3 className="text-sm font-bold font-mono text-zinc-100 tracking-tight uppercase">
+                  EDIT_CONFIG: <span className="text-emerald-400 font-mono ml-2">{selectedTopic}</span>
                 </h3>
                 <button
                   onClick={() => setShowConfigEditor(false)}
-                  className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-md hover:bg-slate-100 dark:hover:bg-slate-800"
+                  className="p-1.5 text-zinc-500 hover:text-emerald-400 hover:bg-zinc-900 rounded-none transition-colors focus:outline-none"
                 >
-                  <X className="w-4 h-4" />
+                  <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
-            <div className="p-4">
+            <div className="p-5 overflow-y-auto bg-black">
               {configEditorLoading ? (
-                <div className="flex items-center justify-center py-8 text-slate-500 text-sm">Loading configuration…</div>
+                <div className="flex flex-col items-center justify-center py-12 text-zinc-500">
+                  <RefreshCw className="w-8 h-8 animate-spin text-emerald-500 mb-4" />
+                  <span className="text-xs font-mono font-bold uppercase tracking-widest">LOADING_CONFIG...</span>
+                </div>
               ) : configEditorError ? (
-                <div className="p-3 mb-3 text-sm text-red-600 bg-red-50 dark:bg-red-900/20 dark:text-red-300 rounded">
-                  {configEditorError}
+                <div className="p-4 mb-4 text-xs font-mono font-bold text-red-400 bg-red-950/30 border border-red-900 uppercase">
+                  ERR: {configEditorError}
                 </div>
               ) : Object.keys(editingConfig).length > 0 ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                   {Object.entries(editingConfig).map(([key, value]) => (
-                    <div key={key} className="space-y-2">
-                      <label className="text-sm font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
+                    <div key={key} className="space-y-1.5">
+                      <label className="text-[10px] font-mono font-bold text-zinc-500 flex items-center gap-1.5 uppercase">
                         <span>{key}</span>
                         <span
-                          className="inline-flex items-center justify-center w-4 h-4 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-help"
+                          className="inline-flex items-center justify-center w-3 h-3 text-zinc-600 hover:text-emerald-500 cursor-help transition-colors"
                           title={getConfigTooltip(key)}
                           aria-label={`Info about ${key}`}
                         >
-                          i
+                          [?]
                         </span>
                       </label>
                       <input
@@ -581,37 +639,37 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
                           ...editingConfig,
                           [key]: e.target.value,
                         })}
-                        className="w-full px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-slate-500 focus:border-transparent font-mono text-sm"
+                        className="w-full dev-input"
                       />
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="flex items-center justify-between p-3 text-sm text-slate-500 bg-slate-50 dark:bg-slate-800/60 rounded">
-                  <span>No configuration properties loaded.</span>
+                <div className="flex items-center justify-between p-4 text-xs font-mono font-bold text-zinc-500 bg-zinc-950 border border-zinc-800 uppercase tracking-widest">
+                  <span>NO_PROPERTIES_FOUND</span>
                   <button
                     onClick={() => selectedTopic && openConfigEditor(selectedTopic)}
-                    className="px-2 py-1 text-xs rounded-md border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700"
+                    className="dev-btn py-1"
                   >
-                    Retry
+                    RETRY
                   </button>
                 </div>
               )}
-              <div className="flex justify-end space-x-2 mt-4 pt-3 border-t border-slate-200 dark:border-slate-800">
-                <button
-                  onClick={() => setShowConfigEditor(false)}
-                  className="px-3 py-1.5 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 rounded-md hover:bg-slate-50 dark:hover:bg-slate-800 font-medium"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => selectedTopic && updateTopicConfig(selectedTopic, editingConfig)}
-                  disabled={savingConfig || configEditorLoading || Object.keys(editingConfig).length === 0}
-                  className="px-3 py-1.5 bg-slate-900 dark:bg-slate-700 text-white rounded-md hover:bg-black/80 disabled:opacity-50 font-medium"
-                >
-                  {savingConfig ? 'Saving...' : 'Save Configuration'}
-                </button>
-              </div>
+            </div>
+            <div className="p-5 border-t border-zinc-800 bg-zinc-950 flex justify-end space-x-3">
+              <button
+                onClick={() => setShowConfigEditor(false)}
+                className="dev-btn"
+              >
+                CANCEL
+              </button>
+              <button
+                onClick={() => selectedTopic && updateTopicConfig(selectedTopic, editingConfig)}
+                disabled={savingConfig || configEditorLoading || Object.keys(editingConfig).length === 0}
+                className="dev-btn-primary disabled:opacity-50"
+              >
+                {savingConfig ? 'SAVING...' : 'SAVE_CONFIG'}
+              </button>
             </div>
           </div>
         </div>

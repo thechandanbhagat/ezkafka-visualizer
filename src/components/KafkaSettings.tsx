@@ -313,55 +313,56 @@ export default function KafkaSettings({ onSettingsUpdate }: KafkaSettingsProps) 
 
   if (loading) {
     return (
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-6">
-        <div className="flex items-center justify-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-          <span className="ml-2 text-gray-600 dark:text-gray-300">Loading settings...</span>
+      <div className="dev-card p-12">
+        <div className="flex flex-col items-center justify-center">
+          <div className="w-12 h-12 rounded-none border border-zinc-800 border-t-emerald-500 animate-spin mb-4"></div>
+          <span className="text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest">LOADING_SETTINGS...</span>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm">
-      <div className="p-6">
-        <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">
-          Kafka Server Configuration
+    <div className="dev-card">
+      <div className="p-8">
+        <h2 className="text-lg font-bold font-mono text-zinc-100 mb-6 tracking-tight uppercase">
+          KAFKA_SERVER_CONFIGURATION
         </h2>
 
         {/* Message Display */}
         {message && (
-          <div className={`mb-4 p-4 rounded-md ${
+          <div className={`mb-6 p-4 font-mono text-xs font-bold uppercase tracking-widest border flex items-start gap-3 ${
             message.type === 'success' 
-              ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800'
-              : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800'
+              ? 'bg-emerald-950/30 text-emerald-400 border-emerald-900'
+              : 'bg-red-950/30 text-red-400 border-red-900'
           }`}>
-            {message.text}
+            <span className="mt-0.5">{message.type === 'success' ? '[SUCCESS]' : '[ERROR]'}</span>
+            <span>{message.text}</span>
           </div>
         )}
 
         {/* Tabs */}
-        <div className="border-b border-gray-200 dark:border-gray-700 mb-6">
+        <div className="border-b border-zinc-800 mb-8">
           <nav className="-mb-px flex space-x-8">
             <button
               onClick={() => setActiveTab('profiles')}
-              className={`py-2 px-1 border-b-2 font-medium text-sm ${
+              className={`py-3 px-1 border-b-2 font-mono text-xs font-bold uppercase tracking-widest transition-colors ${
                 activeTab === 'profiles'
-                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+                  ? 'border-emerald-500 text-emerald-400'
+                  : 'border-transparent text-zinc-500 hover:text-zinc-300'
               }`}
             >
-              Server Profiles
+              SERVER_PROFILES
             </button>
             <button
               onClick={() => setActiveTab('current')}
-              className={`py-2 px-1 border-b-2 font-medium text-sm ${
+              className={`py-3 px-1 border-b-2 font-mono text-xs font-bold uppercase tracking-widest transition-colors ${
                 activeTab === 'current'
-                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+                  ? 'border-emerald-500 text-emerald-400'
+                  : 'border-transparent text-zinc-500 hover:text-zinc-300'
               }`}
             >
-              Current Configuration
+              CURRENT_CONFIGURATION
             </button>
           </nav>
         </div>
@@ -370,80 +371,84 @@ export default function KafkaSettings({ onSettingsUpdate }: KafkaSettingsProps) 
         {activeTab === 'profiles' && multiServerConfig && (
           <div>
             {/* Profile List */}
-            <div className="mb-6">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-medium text-gray-900 dark:text-white">
-                  Server Profiles ({multiServerConfig.profiles.length})
+            <div className="mb-8">
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-sm font-bold font-mono text-zinc-100 uppercase tracking-widest">
+                  SAVED_PROFILES <span className="text-emerald-500 ml-2">[{multiServerConfig.profiles.length}]</span>
                 </h3>
                 <button
                   onClick={() => setShowCreateForm(true)}
                   disabled={saving}
-                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-4 py-2 rounded-md text-sm font-medium"
+                  className="dev-btn-primary"
                 >
-                  Add New Profile
+                  + ADD_NEW_PROFILE
                 </button>
               </div>
 
-              <div className="space-y-4">
+              <div className="grid grid-cols-1 gap-4">
                 {multiServerConfig.profiles.map((profile) => (
                   <div
                     key={profile.id}
-                    className={`border rounded-lg p-4 ${
+                    className={`bg-black border transition-all duration-200 p-5 ${
                       profile.id === multiServerConfig.activeProfileId
-                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                        : 'border-gray-200 dark:border-gray-700'
+                        ? 'border-emerald-500'
+                        : 'border-zinc-800 hover:border-zinc-600'
                     }`}
                   >
-                    <div className="flex justify-between items-start">
+                    <div className="flex flex-col md:flex-row md:justify-between md:items-start gap-4">
                       <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <h4 className="font-medium text-gray-900 dark:text-white">
+                        <div className="flex items-center gap-3 mb-2">
+                          <h4 className={`text-sm font-mono font-bold uppercase tracking-widest ${profile.id === multiServerConfig.activeProfileId ? 'text-emerald-400' : 'text-zinc-100'}`}>
                             {profile.name}
                           </h4>
                           {profile.id === multiServerConfig.activeProfileId && (
-                            <span className="bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-300 text-xs px-2 py-1 rounded-full">
-                              Active
+                            <span className="dev-badge text-[10px]">
+                              ACTIVE
                             </span>
                           )}
                         </div>
                         {profile.description && (
-                          <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                          <p className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest mb-3">
                             {profile.description}
                           </p>
                         )}
-                        <div className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-                          <span className="font-medium">Brokers:</span> {profile.settings.brokers.join(', ')}
-                        </div>
-                        {profile.lastConnected && (
-                          <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                            Last connected: {new Date(profile.lastConnected).toLocaleString()}
+                        <div className="flex flex-wrap gap-x-6 gap-y-2 text-[10px] font-mono uppercase tracking-widest">
+                          <div className="text-zinc-500">
+                            <span className="font-bold text-zinc-400 mr-2">BROKERS:</span> 
+                            <span className="bg-zinc-950 border border-zinc-800 px-2 py-0.5">{profile.settings.brokers.join(', ')}</span>
                           </div>
-                        )}
+                          {profile.lastConnected && (
+                            <div className="text-zinc-500">
+                              <span className="font-bold text-zinc-400 mr-2">LAST_CONNECTED:</span> 
+                              {new Date(profile.lastConnected).toLocaleString()}
+                            </div>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex gap-2 ml-4">
+                      <div className="flex flex-wrap gap-2 pt-2 md:pt-0">
                         {profile.id !== multiServerConfig.activeProfileId && (
                           <button
                             onClick={() => handleSwitchProfile(profile.id)}
                             disabled={saving}
-                            className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-sm font-medium disabled:opacity-50"
+                            className="dev-btn"
                           >
-                            Switch
+                            CONNECT
                           </button>
                         )}
                         <button
                           onClick={() => handleEditProfile(profile)}
                           disabled={saving}
-                          className="text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-300 text-sm font-medium disabled:opacity-50"
+                          className="dev-btn"
                         >
-                          Edit
+                          EDIT
                         </button>
                         {multiServerConfig.profiles.length > 1 && (
                           <button
                             onClick={() => handleDeleteProfile(profile.id)}
                             disabled={saving}
-                            className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 text-sm font-medium disabled:opacity-50"
+                            className="dev-btn border-red-500/30 text-red-400 hover:border-red-500 hover:bg-red-950/30"
                           >
-                            Delete
+                            DELETE
                           </button>
                         )}
                       </div>
@@ -455,94 +460,99 @@ export default function KafkaSettings({ onSettingsUpdate }: KafkaSettingsProps) 
 
             {/* Create/Edit Profile Form */}
             {showCreateForm && (
-              <div className="border-t pt-6">
-                <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
-                  {editingProfile ? 'Edit Profile' : 'Create New Profile'}
+              <div className="border-t border-zinc-800 pt-8 mt-4 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                <h3 className="text-sm font-bold font-mono text-zinc-100 uppercase tracking-widest mb-6">
+                  {editingProfile ? 'EDIT_PROFILE_SETTINGS' : 'CREATE_NEW_PROFILE'}
                 </h3>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6 bg-black border border-zinc-800">
                   {/* Basic Information */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Profile Name *
+                    <label className="block text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest mb-2">
+                      PROFILE_NAME <span className="text-emerald-500">*</span>
                     </label>
                     <input
                       type="text"
                       value={formData.name}
                       onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
-                      placeholder="e.g., Production Kafka"
+                      className="w-full dev-input"
+                      placeholder="E.G. PRODUCTION_KAFKA"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Description
+                    <label className="block text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest mb-2">
+                      DESCRIPTION
                     </label>
                     <input
                       type="text"
                       value={formData.description}
                       onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
-                      placeholder="Optional description"
+                      className="w-full dev-input"
+                      placeholder="OPTIONAL DESCRIPTION"
                     />
                   </div>
 
                   <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Brokers *
+                    <label className="block text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest mb-2">
+                      BROKERS <span className="text-emerald-500">*</span>
                     </label>
                     <input
                       type="text"
                       value={formData.brokers}
                       onChange={(e) => setFormData({ ...formData, brokers: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
-                      placeholder="localhost:9092, broker2:9092"
+                      className="w-full dev-input"
+                      placeholder="LOCALHOST:9092, BROKER2:9092"
                     />
-                    <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                      Comma-separated list of broker addresses
+                    <p className="mt-2 text-[10px] font-mono uppercase tracking-widest text-zinc-600 flex items-center gap-1.5">
+                      <span className="w-1 h-1 bg-zinc-600"></span> COMMA-SEPARATED LIST OF BROKER ADDRESSES
                     </p>
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Client ID
+                    <label className="block text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest mb-2">
+                      CLIENT_ID
                     </label>
                     <input
                       type="text"
                       value={formData.clientId}
                       onChange={(e) => setFormData({ ...formData, clientId: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
+                      className="w-full dev-input"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Application Name
+                    <label className="block text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest mb-2">
+                      APPLICATION_NAME
                     </label>
                     <input
                       type="text"
                       value={formData.appName}
                       onChange={(e) => setFormData({ ...formData, appName: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
+                      className="w-full dev-input"
                     />
                   </div>
                 </div>
 
-                <div className="flex gap-4 mt-6">
-                  <button
-                    onClick={editingProfile ? handleUpdateProfile : handleCreateProfile}
-                    disabled={saving || !formData.name.trim()}
-                    className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-6 py-2 rounded-md font-medium"
-                  >
-                    {saving ? 'Saving...' : (editingProfile ? 'Update Profile' : 'Create Profile')}
-                  </button>
+                <div className="flex items-center gap-4 mt-6 justify-end">
                   <button
                     onClick={cancelForm}
                     disabled={saving}
-                    className="bg-gray-300 hover:bg-gray-400 dark:bg-gray-600 dark:hover:bg-gray-700 disabled:opacity-50 text-gray-700 dark:text-gray-300 px-6 py-2 rounded-md font-medium"
+                    className="dev-btn disabled:opacity-50"
                   >
-                    Cancel
+                    CANCEL
+                  </button>
+                  <button
+                    onClick={editingProfile ? handleUpdateProfile : handleCreateProfile}
+                    disabled={saving || !formData.name.trim()}
+                    className="dev-btn-primary disabled:opacity-50"
+                  >
+                    {saving ? (
+                      <span className="flex items-center">
+                        <div className="w-3 h-3 border border-zinc-800 border-t-emerald-500 animate-spin mr-2"></div>
+                        SAVING...
+                      </span>
+                    ) : (editingProfile ? 'UPDATE_PROFILE' : 'SAVE_PROFILE')}
                   </button>
                 </div>
               </div>
@@ -556,34 +566,45 @@ export default function KafkaSettings({ onSettingsUpdate }: KafkaSettingsProps) 
             {(() => {
               const activeProfile = multiServerConfig.profiles.find(p => p.id === multiServerConfig.activeProfileId);
               return activeProfile ? (
-                <div>
-                  <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
-                    Active Profile: {activeProfile.name}
-                  </h3>
-                  <div className="bg-gray-50 dark:bg-gray-900 rounded-lg p-4">
-                    <dl className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Brokers</dt>
-                        <dd className="mt-1 text-sm text-gray-900 dark:text-white">{activeProfile.settings.brokers.join(', ')}</dd>
+                <div className="animate-in fade-in duration-300">
+                  <div className="flex items-center gap-3 mb-6">
+                    <h3 className="text-sm font-bold font-mono text-zinc-100 uppercase tracking-widest">
+                      ACTIVE_PROFILE:
+                    </h3>
+                    <span className="dev-badge text-[10px]">
+                      {activeProfile.name}
+                    </span>
+                  </div>
+                  <div className="bg-black border border-zinc-800 p-6">
+                    <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
+                      <div className="border-b border-zinc-900 pb-4">
+                        <dt className="text-[10px] font-mono font-bold uppercase tracking-widest text-zinc-500 mb-1.5">BROKERS</dt>
+                        <dd className="font-mono text-xs text-zinc-300">{activeProfile.settings.brokers.join(', ')}</dd>
                       </div>
-                      <div>
-                        <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Client ID</dt>
-                        <dd className="mt-1 text-sm text-gray-900 dark:text-white">{activeProfile.settings.clientId}</dd>
+                      <div className="border-b border-zinc-900 pb-4">
+                        <dt className="text-[10px] font-mono font-bold uppercase tracking-widest text-zinc-500 mb-1.5">CLIENT_ID</dt>
+                        <dd className="font-mono text-xs text-zinc-300">{activeProfile.settings.clientId}</dd>
                       </div>
-                      <div>
-                        <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Connection Timeout</dt>
-                        <dd className="mt-1 text-sm text-gray-900 dark:text-white">{activeProfile.settings.connectionTimeout}ms</dd>
+                      <div className="border-b border-zinc-900 pb-4">
+                        <dt className="text-[10px] font-mono font-bold uppercase tracking-widest text-zinc-500 mb-1.5">CONNECTION_TIMEOUT</dt>
+                        <dd className="font-mono text-xs text-zinc-300">{activeProfile.settings.connectionTimeout}MS</dd>
                       </div>
-                      <div>
-                        <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Request Timeout</dt>
-                        <dd className="mt-1 text-sm text-gray-900 dark:text-white">{activeProfile.settings.requestTimeout}ms</dd>
+                      <div className="border-b border-zinc-900 pb-4">
+                        <dt className="text-[10px] font-mono font-bold uppercase tracking-widest text-zinc-500 mb-1.5">REQUEST_TIMEOUT</dt>
+                        <dd className="font-mono text-xs text-zinc-300">{activeProfile.settings.requestTimeout}MS</dd>
                       </div>
                     </dl>
                   </div>
                 </div>
               ) : (
-                <div className="text-center py-8">
-                  <p className="text-gray-500 dark:text-gray-400">No active profile found</p>
+                <div className="text-center py-16 bg-black border border-zinc-800">
+                  <div className="w-16 h-16 bg-zinc-900 border border-zinc-800 flex items-center justify-center mx-auto mb-4">
+                    <svg className="w-8 h-8 text-zinc-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                  </div>
+                  <p className="text-sm font-mono font-bold uppercase tracking-widest text-zinc-300 mb-1">NO_ACTIVE_PROFILE</p>
+                  <p className="text-[10px] font-mono uppercase tracking-widest text-zinc-500">PLEASE SWITCH TO A PROFILE IN THE SERVER PROFILES TAB</p>
                 </div>
               );
             })()}
