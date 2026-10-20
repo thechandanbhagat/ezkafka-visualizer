@@ -12,6 +12,7 @@ import KafkaSettings from './KafkaSettings';
 import NavbarServerSelector from './NavbarServerSelector';
 import type { TopicInfo } from '@/lib/kafka';
 import { useServer } from '@/contexts/ServerContext';
+import packageInfo from '../../package.json';
 
 const NAVIGATION = [
   { id: 'topics', label: 'Topics', icon: Database, path: '/topics' },
@@ -119,7 +120,7 @@ export default function KafkaVisualizer() {
 
   const handleSubmitIssue = () => {
     const prefix = issueType === 'bug' ? '[BUG]' : issueType === 'feature' ? '[FEATURE]' : '[FEEDBACK]';
-    const body = `### Description\n${issueBody}\n\n### Environment\n- App version: v1.0.1\n- Platform: ${navigator.userAgent}`;
+    const body = `### Description\n${issueBody}\n\n### Environment\n- App version: v${packageInfo.version}\n- Platform: ${navigator.userAgent}`;
     window.open(`https://github.com/thechandanbhagat/ezkafka-visualizer/issues/new?title=${encodeURIComponent(`${prefix} ${issueTitle}`)}&body=${encodeURIComponent(body)}&labels=${issueType}`, '_blank', 'noopener,noreferrer');
     setShowFeedbackModal(false);
     setIssueTitle('');
