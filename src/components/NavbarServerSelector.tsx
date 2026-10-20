@@ -43,7 +43,7 @@ export default function NavbarServerSelector({ className = '' }: NavbarServerSel
       onKeyDown={event => {
         if (event.key === 'Escape') { setOpen(false); trigger.current?.focus(); }
       }}>
-      <button ref={trigger} className="cluster-trigger" aria-label="Select cluster" aria-haspopup="menu" aria-expanded={open} aria-controls="cluster-menu"
+      <button ref={trigger} className="cluster-trigger" aria-label="Select cluster" title={activeProfile?.settings.brokers.join(', ')} aria-haspopup="menu" aria-expanded={open} aria-controls="cluster-menu"
         onClick={() => setOpen(value => !value)}
         onKeyDown={event => {
           if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); }
@@ -51,7 +51,6 @@ export default function NavbarServerSelector({ className = '' }: NavbarServerSel
         <Server size={17} className="text-muted shrink-0" aria-hidden="true" />
         <span className="flex-1 min-w-0">
           <span className="block text-xs font-semibold text-ink truncate">{activeProfile?.name || 'Select a cluster'}</span>
-          <span className="cluster-address block text-[11px] text-muted truncate mt-0.5">{activeProfile?.settings.brokers[0] || 'No broker configured'}</span>
         </span>
         <ChevronDown size={14} className="text-muted shrink-0" aria-hidden="true" />
       </button>

@@ -2,7 +2,7 @@
 
 // @group Configuration : Workspace dependencies and navigation
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Database, MessageSquare, Users, Settings, ChevronLeft, ChevronRight, X, RefreshCw, Github, Package, Bug, Network, CircleAlert } from 'lucide-react';
+import { Database, MessageSquare, Users, Settings, PanelLeftClose, PanelLeftOpen, X, RefreshCw, Github, Package, Bug, Network, CircleAlert } from 'lucide-react';
 import TopicList from './TopicList';
 import MessageProducer from './MessageProducer';
 import ConsumerTaskbar from './ConsumerTaskbar';
@@ -42,6 +42,7 @@ export default function KafkaVisualizer() {
 
   useEffect(() => {
     setCurrentPath(window.location.pathname + window.location.search);
+    try { setCollapsed(window.localStorage.getItem('ezkafka.sidebar-collapsed') === 'true'); } catch { /* Storage is optional. */ }
     const handlePopState = () => setCurrentPath(window.location.pathname + window.location.search);
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
@@ -50,6 +51,13 @@ export default function KafkaVisualizer() {
   const navigateTo = (path: string) => {
     if (window.location.pathname + window.location.search !== path) window.history.pushState(null, '', path);
     setCurrentPath(path);
+  };
+
+  // @group BusinessLogic > Preferences : Remember the navigation width on this browser
+  const toggleSidebar = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    try { window.localStorage.setItem('ezkafka.sidebar-collapsed', String(next)); } catch { /* Navigation also works without storage. */ }
   };
 
   // @group DatabaseOperations : Load topics for the selected cluster
@@ -123,15 +131,13 @@ export default function KafkaVisualizer() {
   return (
     <div className="workspace">
       <a href="#workspace-content" className="skip-link">Skip to content</a>
-      <aside className={`workspace-sidebar ${collapsed ? 'is-collapsed' : ''}`} aria-label="Workspace sidebar">
+      <aside id="workspace-sidebar" className={`workspace-sidebar ${collapsed ? 'is-collapsed' : ''}`} aria-label="Workspace sidebar">
         <div className="workspace-brand" title={appName}>
-          <div className="brand-symbol"><Network size={29} strokeWidth={1.6} aria-hidden="true" /></div>
+          <div className="brand-symbol"><Network size={23} strokeWidth={1.6} aria-hidden="true" /></div>
           <div className="sidebar-label min-w-0">
             <div className="brand-name">{appName === 'EZ Kafka Visualizer' ? 'EZ Kafka' : appName}</div>
-            <div className="brand-caption">Cluster workspace</div>
           </div>
         </div>
-        <div className="sidebar-section">Workspace</div>
         <nav className="workspace-navigation" aria-label="Main navigation">
           {NAVIGATION.map(tab => {
             const Icon = tab.icon;
@@ -150,35 +156,25 @@ export default function KafkaVisualizer() {
             );
           })}
         </nav>
-        {activeProfile && (
-          <dl className="sidebar-cluster">
-            <dt>Active cluster</dt>
-            <dd className="font-medium">{activeProfile.name}</dd>
-            <dd className="!text-[#91a3ba] text-[11px] mt-1">{activeProfile.settings.brokers.length} {activeProfile.settings.brokers.length === 1 ? 'broker' : 'brokers'} configured</dd>
-          </dl>
-        )}
         <div className="sidebar-bottom">
-          <button className="workspace-nav-link w-full mb-4" onClick={() => setShowFeedbackModal(true)} aria-label="Send feedback" title="Send feedback">
-            <Bug aria-hidden="true" /><span className="sidebar-label">Send feedback</span>
+          <button className="sidebar-utility" onClick={() => setShowFeedbackModal(true)} aria-label="Send feedback" title="Send feedback">
+            <Bug size={16} aria-hidden="true" />
           </button>
-          <div className="sidebar-resources">
-            <a href="https://github.com/thechandanbhagat/ezkafka-visualizer" target="_blank" rel="noopener noreferrer"><Github size={13} />GitHub</a>
-            <a href="https://hub.docker.com/repository/docker/chandanbhagat/ezkafka-visualizer" target="_blank" rel="noopener noreferrer"><Package size={13} />Docker</a>
-          </div>
-          <button className="sidebar-collapse" onClick={() => setCollapsed(value => !value)} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-expanded={!collapsed}>
-            {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}<span className="sidebar-label">Collapse sidebar</span>
-          </button>
+          <a className="sidebar-utility" href="https://github.com/thechandanbhagat/ezkafka-visualizer" target="_blank" rel="noopener noreferrer" aria-label="GitHub" title="GitHub"><Github size={16} aria-hidden="true" /></a>
+          <a className="sidebar-utility" href="https://hub.docker.com/repository/docker/chandanbhagat/ezkafka-visualizer" target="_blank" rel="noopener noreferrer" aria-label="Docker" title="Docker"><Package size={16} aria-hidden="true" /></a>
         </div>
       </aside>
 
       <div className="workspace-main">
         <header className="workspace-topbar">
-          <div className="workspace-breadcrumb"><span>Workspace</span><ChevronRight size={13} /><strong>{current.label}</strong></div>
           <div className="workspace-topbar-actions">
-            <div className="connection-status" role="status" aria-label={connectionLabel} title={connectionLabel}>
-              <span className="status-dot" style={{ background: statusColor }} /><span>{connectionLabel}</span>
-            </div>
+            <button className="sidebar-collapse icon-button" onClick={toggleSidebar} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-expanded={!collapsed} aria-controls="workspace-sidebar">
+              {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+            </button>
             <NavbarServerSelector />
+          </div>
+          <div className="connection-status" role="status" aria-label={connectionLabel} title={connectionLabel}>
+            <span className="status-dot" style={{ background: statusColor }} /><span>{connectionLabel}</span>
           </div>
         </header>
         <main id="workspace-content" tabIndex={-1} className={`workspace-content ${isConsumerActive ? 'has-consumer' : ''}`}>

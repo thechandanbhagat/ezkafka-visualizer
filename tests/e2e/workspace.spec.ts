@@ -18,8 +18,27 @@ test('navigates through each workspace and preserves browser history', async ({ 
   await expect(page.getByRole('heading', { name: /^Message producer$/i })).toBeVisible();
   await page.getByRole('button', { name: 'Collapse sidebar' }).click();
   await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Expand sidebar' })).toHaveAttribute('aria-expanded', 'false');
   await page.getByRole('button', { name: 'Expand sidebar' }).press('Enter');
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toHaveAttribute('aria-expanded', 'true');
   await expect(page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: 'Topics', exact: true })).toBeVisible();
+});
+
+// @group IntegrationTests > Sidebar : Compact utility actions retain keyboard access
+test('keeps feedback and resource links accessible in the collapsed sidebar', async ({ page }) => {
+  await page.goto('/topics');
+  await page.getByRole('button', { name: 'Collapse sidebar' }).click();
+  const sidebar = page.getByRole('complementary', { name: 'Workspace sidebar' });
+  await expect(sidebar.getByRole('link', { name: 'GitHub', exact: true })).toBeVisible();
+  await expect(sidebar.getByRole('link', { name: 'Docker', exact: true })).toBeVisible();
+  const feedback = sidebar.getByRole('button', { name: 'Send feedback', exact: true });
+  await feedback.press('Enter');
+  await expect(page.getByRole('dialog', { name: 'Send feedback' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Send feedback' })).toHaveCount(0);
+  await expect(feedback).toBeFocused();
 });
 
 // @group IntegrationTests > Topics : Filtering and safe creation through the real form
