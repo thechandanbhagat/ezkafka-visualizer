@@ -9,10 +9,15 @@ const compat = new FlatCompat({
   baseDirectory: __dirname,
 });
 
+// @group Configuration : Lint application, reusable tests, and the guarded CommonJS launchers
 const eslintConfig = [
+  {
+    ignores: ["**/*_backup.*", "**/*backup*", "node_modules/**", ".next/**", "next-env.d.ts", "excluded/**", ".azure/**"],
+  },
   ...compat.extends("next/core-web-vitals", "next/typescript"),
   {
-    ignores: ["**/*_backup.*", "**/*backup*", "node_modules/**", ".next/**"],
+    files: ["*.js", "bin/*.js", "scripts/*.cjs"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
   },
 ];
 
