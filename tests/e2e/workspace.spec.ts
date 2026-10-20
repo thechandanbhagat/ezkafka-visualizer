@@ -5,7 +5,7 @@ test('navigates through each workspace and preserves browser history', async ({ 
   await page.goto('/topics');
   await expect(page.getByRole('heading', { name: 'Topics', exact: true })).toBeVisible();
 
-  for (const [label, path, heading] of [['Message producer', '/producer', 'Message producer'], ['Consumer groups', '/groups', 'Consumer groups'], ['Settings', '/settings', 'Connection settings']]) {
+  for (const [label, path, heading] of [['Message explorer', '/explorer', 'Message explorer'], ['Message producer', '/producer', 'Message producer'], ['Consumer groups', '/groups', 'Consumer groups'], ['Settings', '/settings', 'Connection settings']]) {
     await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: new RegExp(`^${label}$`, 'i') }).click();
     await expect(page).toHaveURL(new RegExp(`${path}$`));
     await expect(page.getByRole('heading', { name: new RegExp(`^${heading}$`, 'i') })).toBeVisible();
@@ -144,7 +144,7 @@ test('creates a consumer from selected topics and can start and stop it', async 
 // @group EdgeCases > Responsive : Keep the application viewport contained on a narrow screen
 test('keeps every workspace within a mobile viewport', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  for (const path of ['/topics', '/producer', '/groups', '/settings']) {
+  for (const path of ['/topics', '/explorer', '/producer', '/groups', '/settings']) {
     await page.goto(path);
     await expect(page.getByRole('button', { name: 'Select cluster', exact: true })).toBeVisible();
     await expect(page.getByRole('status', { name: 'Connected', exact: true })).toBeVisible();

@@ -63,6 +63,28 @@ describe.skipIf(!enabled)('disposable live Kafka regression', () => {
     await service.stopConsumerSession(sessionId);
     await expect(service.pollConsumerSession({ sessionId, topics: [topic] })).rejects.toMatchObject({ status: 410 });
 
+    // @group IntegrationTests > Explorer : Snapshot pages and recent windows preserve application offsets
+    const populated = (await admin.fetchTopicOffsets(topic)).find(partition => BigInt(partition.high) > BigInt(partition.low))!;
+    const browseRequest = { profileId: 'disposable-test', topic, partition: populated.partition, limit: 10 };
+    let page = await service.browseMessages({ ...browseRequest, start: { kind: 'earliest' } });
+    const browsed = [...page.messages];
+    const snapshotEnd = page.highOffset;
+    while (page.nextCursor) {
+      const cursor = page.nextCursor;
+      page = await service.browseMessages({ ...browseRequest, cursor });
+      expect(page.highOffset).toBe(snapshotEnd);
+      expect(page.nextCursor?.nextOffset).not.toBe(cursor.nextOffset);
+      browsed.push(...page.messages);
+    }
+    expect(browsed.map(message => message.value)).toEqual(received);
+    const recent = await service.browseMessages({ ...browseRequest, limit: 5, start: { kind: 'latest' } });
+    expect(recent.messages.map(message => message.value)).toEqual(received.slice(-5));
+    expect(recent.complete).toBe(true);
+    const beyondEnd = await service.browseMessages({ ...browseRequest, start: { kind: 'timestamp', timestamp: new Date(Date.now() + 60_000).toISOString() } });
+    expect(beyondEnd.messages).toEqual([]);
+    expect(beyondEnd.complete).toBe(true);
+    expect(await admin.fetchOffsets({ groupId: baselineGroup, topics: [topic] })).toEqual(baseline);
+
     const offsetsBefore = await admin.fetchTopicOffsets(topic);
     const purge = await service.cleanupMessages(topic);
     expect(purge.deletedPartitions).toBe(2);

@@ -3,6 +3,8 @@ import type { Admin, ConfigEntries, Producer } from 'kafkajs';
 import type { MultiServerConfig } from './kafka-settings';
 import { getStoredKafkaConfig } from '@/services/kafka-config-store';
 import { KafkaConsumerSessions } from '@/services/kafka-consumer-sessions';
+import { KafkaMessageBrowser } from '@/services/kafka-message-browser';
+import type { BrowseMessagesRequest } from '@/models/message-explorer';
 
 // @group Types : Kafka connections, topic summaries, and inspection records
 export interface KafkaConfig {
@@ -125,6 +127,7 @@ export class KafkaService {
   private readonly kafka: Kafka;
   private readonly admin: Admin;
   private readonly consumerSessions: KafkaConsumerSessions;
+  private readonly messageBrowser: KafkaMessageBrowser;
   private producer?: Producer;
   private connecting?: Promise<void>;
   private producerConnecting?: Promise<Producer>;
@@ -141,6 +144,7 @@ export class KafkaService {
     });
     this.admin = this.kafka.admin();
     this.consumerSessions = new KafkaConsumerSessions(this.kafka);
+    this.messageBrowser = new KafkaMessageBrowser(this.kafka);
   }
 
   private assertCurrent(): void {
@@ -165,6 +169,7 @@ export class KafkaService {
       this.admin.disconnect(),
       this.producer?.disconnect(),
       this.consumerSessions.disconnect(),
+      this.messageBrowser.disconnect(),
     ]);
     this.connecting = undefined;
     this.producerConnecting = undefined;
@@ -329,6 +334,10 @@ export class KafkaService {
     await this.consumerSessions.stop(sessionId);
   }
 
+  async browseMessages(request: BrowseMessagesRequest, signal?: AbortSignal) {
+    this.assertCurrent();
+    return this.messageBrowser.browse(request, signal);
+  }
 
   // @group DatabaseOperations > Metadata : Decode member assignments and count members for each topic
   async getClusterInfo(): Promise<{ topics: number; metadata: unknown }> {

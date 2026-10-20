@@ -25,10 +25,11 @@ interface TopicListProps {
   loading: boolean;
   onRefresh: (profileId?: string) => void;
   onOpenSettings: () => void;
+  onExploreTopic: (topic: string) => void;
   connectionError?: string | null;
 }
 
-export default function TopicList({ topics, loading, onRefresh, onOpenSettings, connectionError }: TopicListProps) {
+export default function TopicList({ topics, loading, onRefresh, onOpenSettings, onExploreTopic, connectionError }: TopicListProps) {
   // @group Configuration > State : Topic actions, filters, and configuration editor
   const { selectedProfileId, activeProfile } = useServer();
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -470,12 +471,13 @@ export default function TopicList({ topics, loading, onRefresh, onOpenSettings, 
                   {['Topic name', 'Partitions', 'Replication', 'Est. messages', 'Consumers'].map(label => (
                     <th key={label} scope="col" className="whitespace-nowrap px-3 py-2 text-left text-xs font-medium text-muted">{label}</th>
                   ))}
+                  <th scope="col" className="px-3 py-2 text-right text-xs font-medium text-muted">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line bg-surface">
                 {filteredTopics.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center">
+                    <td colSpan={6} className="px-4 py-8 text-center">
                       <Search className="mx-auto mb-3 h-6 w-6 text-muted" aria-hidden="true" />
                       <p className="font-medium text-ink">No topics match your search</p>
                       <p className="mt-1 text-sm text-muted">Try a different topic name or clear the filter.</p>
@@ -511,10 +513,13 @@ export default function TopicList({ topics, loading, onRefresh, onOpenSettings, 
                           )}
                         </div>
                       </td>
+                      <td className="whitespace-nowrap px-2 py-1.5 text-right">
+                        <button onClick={() => onExploreTopic(topic.name)} className="rounded-md p-2 text-muted transition-colors hover:bg-accent-soft hover:text-accent" title="Browse messages" aria-label={`Browse messages in ${topic.name}`}><Search className="h-4 w-4" aria-hidden="true" /></button>
+                      </td>
                     </tr>
                     {expandedTopics.has(topic.name) && (
                       <tr id={`topic-config-details-${topic.name}`}>
-                        <td colSpan={5} className="border-y border-line bg-subtle px-3 py-3">
+                        <td colSpan={6} className="border-y border-line bg-subtle px-3 py-3">
                           <div role="group" className="mb-3 flex flex-wrap items-center gap-2" aria-label={`Actions for ${topic.name}`}>
                             <button onClick={() => openConfigEditor(topic.name)} className="dev-btn inline-flex items-center gap-1.5" aria-label={`Edit configuration for ${topic.name}`}><Edit3 className="h-3.5 w-3.5" aria-hidden="true" /> Edit configuration</button>
                             <button

@@ -67,7 +67,8 @@ export function authorizeRequest(request: AccessRequest, env: NodeJS.ProcessEnv 
     return { allowed: false, status: 403, message: 'A same-origin request is required.' };
   }
   const path = new URL(request.url).pathname;
-  const inspection = path === '/api/messages/consume' && ['POST', 'DELETE'].includes(method);
+  const inspection = (path === '/api/messages/consume' && ['POST', 'DELETE'].includes(method)) ||
+    (path === '/api/messages/browse' && method === 'POST');
   if (role === 'readonly' && !safe && !inspection) {
     return { allowed: false, status: 403, message: 'Administrator access is required.' };
   }

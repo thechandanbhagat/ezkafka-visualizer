@@ -2,9 +2,10 @@
 
 // @group Configuration : Workspace dependencies and navigation
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Database, MessageSquare, Users, Settings, PanelLeftClose, PanelLeftOpen, X, RefreshCw, Github, Package, Bug, Network, CircleAlert } from 'lucide-react';
+import { Database, MessageSquare, ScanSearch, Users, Settings, PanelLeftClose, PanelLeftOpen, X, RefreshCw, Github, Package, Bug, Network, CircleAlert } from 'lucide-react';
 import TopicList from './TopicList';
 import MessageProducer from './MessageProducer';
+import MessageExplorer from './MessageExplorer';
 import ConsumerTaskbar from './ConsumerTaskbar';
 import ConsumerGroups from './ConsumerGroups';
 import KafkaSettings from './KafkaSettings';
@@ -14,6 +15,7 @@ import { useServer } from '@/contexts/ServerContext';
 
 const NAVIGATION = [
   { id: 'topics', label: 'Topics', icon: Database, path: '/topics' },
+  { id: 'explorer', label: 'Message explorer', icon: ScanSearch, path: '/explorer' },
   { id: 'producer', label: 'Message producer', icon: MessageSquare, path: '/producer' },
   { id: 'groups', label: 'Consumer groups', icon: Users, path: '/groups' },
   { id: 'settings', label: 'Settings', icon: Settings, path: '/settings' },
@@ -38,6 +40,7 @@ export default function KafkaVisualizer() {
   const { activeProfile, selectedProfileId, connectionKey, isLoading: configLoading, error: configError } = useServer();
   const visibleTopics = connectedConnectionKey === connectionKey ? topics : [];
   const current = NAVIGATION.find(tab => tab.id === currentPath.split('?')[0].split('/')[1]) || NAVIGATION[0];
+  const explorerTopic = new URLSearchParams(currentPath.split('?')[1] || '').get('topic') || '';
   const appName = activeProfile?.settings.appName || 'EZ Kafka Visualizer';
 
   useEffect(() => {
@@ -179,7 +182,8 @@ export default function KafkaVisualizer() {
         </header>
         <main id="workspace-content" tabIndex={-1} className={`workspace-content ${isConsumerActive ? 'has-consumer' : ''}`}>
           <div className="workspace-page">
-            {current.id === 'topics' && <TopicList key={connectionKey} topics={visibleTopics} loading={loading} onRefresh={fetchTopics} onOpenSettings={() => navigateTo('/settings')} connectionError={connectionError} />}
+            {current.id === 'topics' && <TopicList key={connectionKey} topics={visibleTopics} loading={loading} onRefresh={fetchTopics} onOpenSettings={() => navigateTo('/settings')} onExploreTopic={topic => navigateTo(`/explorer?topic=${encodeURIComponent(topic)}`)} connectionError={connectionError} />}
+            {current.id === 'explorer' && <MessageExplorer key={`${connectionKey}:${explorerTopic}`} topics={visibleTopics} loading={loading} connectionError={connectionError} initialTopic={explorerTopic} />}
             {current.id === 'producer' && <MessageProducer key={connectionKey} topics={visibleTopics.map(topic => topic.name)} connectionError={connectionError} />}
             {current.id === 'groups' && <ConsumerGroups key={connectionKey} onRefresh={() => fetchTopics()} />}
             {current.id === 'settings' && <KafkaSettings />}

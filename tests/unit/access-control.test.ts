@@ -75,6 +75,7 @@ describe('role authorization', () => {
   it.each([
     ['/api/topics', 'GET'], ['/api/settings', 'GET'], ['/api/consumer-groups', 'GET'],
     ['/api/messages/consume', 'POST'], ['/api/messages/consume', 'DELETE'], ['/', 'GET'],
+    ['/api/messages/browse', 'POST'],
   ])('allows reader inspection %s %s', (path, method) => {
     expect(authorizeRequest(request(path, method, { authorization }), networkEnv)).toEqual({ allowed: true, role: 'readonly' });
   });
@@ -84,6 +85,7 @@ describe('role authorization', () => {
     ['/api/topics/orders/config', 'PUT'], ['/api/topics/orders/partitions', 'POST'],
     ['/api/messages', 'POST'], ['/api/settings', 'POST'], ['/api/settings', 'PUT'],
     ['/api/messages/consume/other', 'DELETE'], ['/api/messages/consume', 'PUT'],
+    ['/api/messages/browse', 'DELETE'], ['/api/messages/browse', 'PUT'], ['/api/messages/browse/other', 'POST'],
   ])('blocks reader mutation %s %s', (path, method) => {
     expect(authorizeRequest(request(path, method, { authorization }), networkEnv)).toMatchObject({ status: 403 });
   });

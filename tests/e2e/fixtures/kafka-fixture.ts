@@ -2,6 +2,8 @@ import { test as base, expect } from '@playwright/test';
 import type { TopicInfo, ConsumerGroupInfo } from '../../../src/lib/kafka';
 import { DEFAULT_SETTINGS } from '../../../src/lib/kafka-settings';
 import type { MultiServerConfig } from '../../../src/lib/kafka-settings';
+import type { BrowseMessagesResponse } from '../../../src/models/message-explorer';
+import { explorerBatch } from './explorer-records';
 
 // @group Types : Per-test API state and recorded browser requests
 interface ApiRequest {
@@ -20,6 +22,9 @@ export interface MockKafkaApi {
   configError: string | null;
   purgeFailures: string[];
   topicConfigs: Record<string, Record<string, string>>;
+  explorerBatches: BrowseMessagesResponse[];
+  explorerError: string | null;
+  explorerDelayMs: number;
   requests: ApiRequest[];
   unhandledRequests: string[];
 }
@@ -48,6 +53,9 @@ function createMockApi(): MockKafkaApi {
     configError: null,
     purgeFailures: [],
     topicConfigs: {},
+    explorerBatches: [explorerBatch()],
+    explorerError: null,
+    explorerDelayMs: 0,
     requests: [],
     unhandledRequests: [],
   };
@@ -111,6 +119,14 @@ export const test = base.extend<{ mockApi: MockKafkaApi }>({
         const topic = api.topics.find(topic => topic.name === name);
         if (topic) topic.messageCount = 0;
         await route.fulfill({ json: { message: 'Purged' } });
+        return;
+      }
+      if (path === '/api/messages/browse' && method === 'POST') {
+        const error = api.explorerError;
+        const result = structuredClone(api.explorerBatches.length > 1 ? api.explorerBatches.shift()! : api.explorerBatches[0]);
+        result.messages = result.messages.map(message => ({ ...message, topic: String(body.topic), partition: Number(body.partition) }));
+        if (api.explorerDelayMs) await new Promise(resolve => setTimeout(resolve, api.explorerDelayMs));
+        await route.fulfill(error ? { status: 502, json: { error } } : { json: result }).catch(() => undefined);
         return;
       }
       if (path === '/api/messages/consume' && method === 'POST') {
