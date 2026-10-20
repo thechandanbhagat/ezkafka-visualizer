@@ -1,5 +1,6 @@
 "use client";
 
+// @group Configuration > Imports : React, icons, and cluster context
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   RefreshCw,
@@ -10,8 +11,9 @@ import {
   Copy,
   Download,
 } from "lucide-react";
-import { useActiveProfileId } from '@/contexts/ServerContext';
+import { useServer } from '@/contexts/ServerContext';
 
+// @group Types : Component data contracts
 interface ConsumerGroupInfo {
   groupId: string;
   members: number;
@@ -24,8 +26,9 @@ interface ConsumerGroupsProps {
   onRefresh?: () => void;
 }
 
+// @group BusinessLogic : Component state and interactions
 export default function ConsumerGroups({ onRefresh }: ConsumerGroupsProps) {
-  const selectedProfileId = useActiveProfileId();
+  const { selectedProfileId, connectionKey, error: configError } = useServer();
   const [consumerGroups, setConsumerGroups] = useState<ConsumerGroupInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -36,40 +39,58 @@ export default function ConsumerGroups({ onRefresh }: ConsumerGroupsProps) {
   const [intervalMs, setIntervalMs] = useState(5000);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const requestSequence = useRef(0);
+  const controllerRef = useRef<AbortController | null>(null);
 
+  // @group APIEndpoints : Discard responses from superseded profile selections
   const fetchConsumerGroups = useCallback(async () => {
+    const sequence = ++requestSequence.current;
+    controllerRef.current?.abort();
+    if (!selectedProfileId) {
+      setLoading(false);
+      setError(configError || 'Select a cluster to view its consumer groups');
+      return;
+    }
+    const controller = new AbortController();
+    controllerRef.current = controller;
     try {
       setLoading(true);
       setError(null);
-      
-      const response = await fetch(`/api/consumer-groups?profileId=${encodeURIComponent(selectedProfileId || '')}`);
-      if (!response.ok) {
-        throw new Error('Failed to fetch consumer groups');
-      }
-      
+
+      const response = await fetch(`/api/consumer-groups?profileId=${encodeURIComponent(selectedProfileId)}`, { signal: controller.signal });
       const data = await response.json();
+      if (sequence !== requestSequence.current) return;
+      if (!response.ok) throw new Error(data.error || 'Failed to fetch consumer groups');
       setConsumerGroups(data);
     } catch (err) {
+      if (sequence !== requestSequence.current) return;
+      setConsumerGroups([]);
       setError(err instanceof Error ? err.message : 'Failed to fetch consumer groups');
-      console.error('Error fetching consumer groups:', err);
     } finally {
-      setLoading(false);
+      if (sequence === requestSequence.current) setLoading(false);
     }
-  }, [selectedProfileId]);
+  }, [selectedProfileId, configError]);
 
   useEffect(() => {
-    fetchConsumerGroups();
-  }, [fetchConsumerGroups]);
+    setConsumerGroups([]);
+    setExpanded({});
+  }, [connectionKey]);
 
-  // Auto-refresh logic
+  // @group BusinessLogic > Refresh : Wait for each request before scheduling the next
   useEffect(() => {
-    if (!autoRefresh) return;
-    if (timerRef.current) clearInterval(timerRef.current);
-    timerRef.current = setInterval(() => fetchConsumerGroups(), intervalMs);
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
+    let active = true;
+    const refresh = async () => {
+      await fetchConsumerGroups();
+      if (active && autoRefresh) timerRef.current = setTimeout(refresh, intervalMs);
     };
-  }, [autoRefresh, intervalMs, fetchConsumerGroups]);
+    void refresh();
+    return () => {
+      active = false;
+      requestSequence.current += 1;
+      controllerRef.current?.abort();
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [autoRefresh, intervalMs, connectionKey, fetchConsumerGroups]);
 
   const handleRefresh = () => {
     fetchConsumerGroups();
@@ -79,13 +100,13 @@ export default function ConsumerGroups({ onRefresh }: ConsumerGroupsProps) {
   const getStateColor = (state: string) => {
     switch (state.toLowerCase()) {
       case 'stable':
-        return 'bg-emerald-950/30 text-emerald-400 border border-emerald-900';
+        return 'bg-success/10 text-success border border-success/20';
       case 'rebalancing':
-        return 'bg-amber-950/30 text-amber-400 border border-amber-900';
+        return 'bg-warning/10 text-warning border border-warning/20';
       case 'empty':
-        return 'bg-zinc-900 text-zinc-400 border border-zinc-800';
+        return 'bg-subtle text-muted border border-line';
       default:
-        return 'bg-red-950/30 text-red-400 border border-red-900';
+        return 'bg-danger/5 text-danger border border-danger/20';
     }
   };
 
@@ -142,186 +163,176 @@ export default function ConsumerGroups({ onRefresh }: ConsumerGroupsProps) {
   };
 
   return (
-    <div className="space-y-4">
-      {/* Header */}
-      <div className="h-16 px-5 dev-card flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <div className="w-10 h-10 bg-zinc-900 border border-zinc-800 flex items-center justify-center">
-            <Users className="w-5 h-5 text-emerald-500" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold font-mono text-zinc-100 tracking-tight uppercase">Consumer Groups</h1>
-            <p className="text-xs font-mono text-zinc-500 uppercase tracking-widest">Monitor membership and subscriptions</p>
+    <div className="min-w-0 max-w-full space-y-3">
+      {/* @group Presentation : Page header and workspace controls */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
+          <h1 className="text-xl font-semibold text-ink tracking-tight">Consumer groups</h1>
+          <div className="flex items-center gap-4 text-xs text-muted">
+            <span><strong className="font-semibold tabular-nums text-ink">{loading && consumerGroups.length === 0 ? '\u2014' : filtered.length}</strong> groups</span>
+            <span><strong className="font-semibold tabular-nums text-ink">{loading && consumerGroups.length === 0 ? '\u2014' : totalConsumers}</strong> consumers</span>
           </div>
         </div>
-        <div className="flex items-center gap-5">
-          <div className="hidden md:flex gap-5 mr-2">
-            <div className="text-right">
-              <div className="text-xl font-bold font-mono text-emerald-400 leading-none">{filtered.length}</div>
-              <div className="text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest mt-1">GROUPS</div>
-            </div>
-            <div className="text-right">
-              <div className="text-xl font-bold font-mono text-emerald-400 leading-none">{totalConsumers}</div>
-              <div className="text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest mt-1">CONSUMERS</div>
-            </div>
-          </div>
           <button
             onClick={handleRefresh}
             disabled={loading}
             className="dev-btn inline-flex items-center"
           >
-            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin text-emerald-500' : ''}`} />
-            REFRESH
+            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin text-accent' : ''}`} />
+            Refresh
           </button>
-        </div>
       </div>
 
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-3 px-1">
-        <div className="relative">
-          <Search className="absolute left-3 top-2.5 w-4 h-4 text-zinc-500" />
+      {/* @group Presentation > Toolbar : Search, sorting, refresh, and export controls */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative w-full sm:w-64">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" aria-hidden="true" />
           <input
+            aria-label="Search consumer groups"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search groups or topics..."
-            className="w-72 pl-10 pr-4 dev-input py-2"
+            className="dev-input w-full !pl-8"
           />
         </div>
-        <div className="flex items-center gap-2 bg-black border border-zinc-800 p-1">
-          <span className="text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest px-2">SORT</span>
+        <div className="flex max-w-full flex-wrap items-center gap-2">
           <select
+            aria-label="Sort consumer groups by"
             value={sortBy}
             onChange={(e) => setSortBy((e.target.value as 'members' | 'groupId' | 'state'))}
-            className="px-2 py-1 bg-zinc-950 border border-zinc-800 text-zinc-300 font-mono text-xs focus:outline-none focus:border-emerald-500 rounded-none uppercase tracking-widest"
+            className="dev-input"
           >
-            <option value="members">MEMBERS</option>
-            <option value="groupId">GROUP_ID</option>
-            <option value="state">STATE</option>
+            <option value="members">Members</option>
+            <option value="groupId">Group ID</option>
+            <option value="state">State</option>
           </select>
           <button
             onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}
-            className="dev-btn py-1 px-3 text-xs"
+            className="dev-btn"
             title="Toggle sort direction"
           >
-            {sortDir === 'asc' ? 'ASC' : 'DESC'}
+            {sortDir === 'asc' ? 'Ascending' : 'Descending'}
           </button>
         </div>
-        <div className="ml-auto flex items-center gap-4 text-xs font-mono font-bold text-zinc-500 uppercase tracking-widest">
-          <label className="flex items-center gap-2 cursor-pointer hover:text-emerald-400 transition-colors">
-            <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} className="rounded-none bg-zinc-950 border-zinc-800 text-emerald-500 focus:ring-emerald-500 focus:ring-1 focus:ring-offset-0 focus:ring-offset-black" />
-            AUTO_REFRESH
+        <div className="flex flex-wrap items-center gap-3 text-xs text-muted xl:ml-auto">
+          <label className="flex items-center gap-2 cursor-pointer hover:text-accent transition-colors">
+            <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} className="rounded-md bg-subtle border-line text-accent focus:ring-accent focus:ring-1 focus:ring-offset-0 focus:ring-offset-surface" />
+            Auto-refresh
           </label>
-          <div className="flex items-center gap-2 bg-black border border-zinc-800 p-1">
-            <span className="pl-2 text-[10px] uppercase tracking-widest">EVERY</span>
-            <select value={intervalMs} onChange={(e) => setIntervalMs(Number(e.target.value))} className="px-2 py-1 bg-zinc-950 border border-zinc-800 text-zinc-300 font-mono text-xs focus:outline-none focus:border-emerald-500 rounded-none uppercase tracking-widest">
+          <div className="flex items-center gap-2">
+            <label htmlFor="group-refresh-interval" className="text-xs">Every</label>
+            <select id="group-refresh-interval" value={intervalMs} onChange={(e) => setIntervalMs(Number(e.target.value))} className="dev-input">
               <option value={3000}>3s</option>
               <option value={5000}>5s</option>
               <option value={10000}>10s</option>
             </select>
           </div>
-          <div className="flex gap-2">
-            <button onClick={exportJSON} className="dev-btn py-1.5 px-3 flex items-center text-xs">
+          <div className="flex gap-1.5">
+            <button onClick={exportJSON} className="dev-btn flex items-center">
               <Download className="w-3 h-3 mr-1.5" /> JSON
             </button>
-            <button onClick={exportCSV} className="dev-btn py-1.5 px-3 flex items-center text-xs">
+            <button onClick={exportCSV} className="dev-btn flex items-center">
               <Download className="w-3 h-3 mr-1.5" /> CSV
             </button>
           </div>
         </div>
       </div>
 
-      {/* Table */}
+      {/* @group Presentation > Groups : Group membership and subscription table */}
       {error ? (
-        <div className="bg-red-950/30 border border-red-900 p-4 text-xs font-mono font-bold text-red-400 uppercase tracking-widest">
-          ERR: {error}
+        <div role="alert" className="rounded-lg bg-danger/5 border border-danger/20 p-4 text-sm text-danger">
+          {error}
         </div>
       ) : filtered.length === 0 && !loading ? (
-        <div className="text-center py-16 dev-card">
-          <div className="w-24 h-24 bg-zinc-900 border border-zinc-800 flex items-center justify-center mx-auto mb-6">
-            <Users className="w-10 h-10 text-zinc-600" />
+        <div className="dev-card px-4 py-8 text-center">
+          <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-md bg-subtle">
+            <Users className="w-5 h-5 text-muted" aria-hidden="true" />
           </div>
-          <h3 className="text-sm font-mono font-bold text-zinc-300 mb-2 uppercase tracking-widest">NO_GROUPS_FOUND</h3>
-          <p className="text-xs font-mono text-zinc-500 max-w-md mx-auto uppercase tracking-widest">
-            NO MATCHING CONSUMER GROUPS.
+          <h3 className="text-sm font-semibold text-ink mb-2">No consumer groups found</h3>
+          <p className="text-sm text-muted max-w-md mx-auto">
+            Try a different search or connect a consumer to this cluster.
           </p>
         </div>
       ) : (
-        <div className="dev-card overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-zinc-800">
-              <thead className="bg-zinc-950">
+        <div className="dev-card min-w-0 max-w-full overflow-hidden">
+          <div className="max-w-full overflow-x-auto">
+            <table className="min-w-full divide-y divide-line" aria-label="Consumer groups" aria-busy={loading}>
+              <thead className="bg-subtle">
                 <tr>
-                  <th className="px-5 py-4 text-left text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">GROUP_ID</th>
-                  <th className="px-5 py-4 text-left text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">MEMBERS</th>
-                  <th className="px-5 py-4 text-left text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">STATE</th>
-                  <th className="px-5 py-4 text-left text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">PROTOCOL</th>
-                  <th className="px-5 py-4 text-left text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">SUBSCRIPTIONS</th>
-                  <th className="px-5 py-4"></th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-muted">Group ID</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-muted">Members</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-muted">State</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-muted">Protocol</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-muted">Subscriptions</th>
+                  <th className="relative px-3 py-2"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
-              <tbody className="bg-black divide-y divide-zinc-900">
+              <tbody className="bg-surface divide-y divide-line">
+                {loading && consumerGroups.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-3 py-8 text-center">
+                      <span role="status" className="inline-flex items-center gap-2 text-sm text-muted">
+                        <RefreshCw className="h-4 w-4 animate-spin" />
+                        Loading consumer groups...
+                      </span>
+                    </td>
+                  </tr>
+                )}
                 {filtered.map((group) => {
                   const isOpen = !!expanded[group.groupId];
                   return (
-                    <tr key={group.groupId} className="align-top hover:bg-zinc-900/50 transition-colors group/row">
-                      <td className="px-5 py-4">
-                        <div className="flex items-center gap-4">
-                          <div className="w-8 h-8 bg-zinc-950 border border-zinc-800 flex items-center justify-center group-hover/row:border-emerald-500/50 transition-colors">
-                            <Users className="w-4 h-4 text-emerald-500/70" />
-                          </div>
+                    <tr key={group.groupId} className="hover:bg-subtle transition-colors group/row">
+                      <td className="px-3 py-1.5">
+                        <div className="flex items-center gap-2">
                           <div className="min-w-0">
-                            <div className="text-sm font-bold font-mono text-zinc-100 truncate max-w-[280px] tracking-tight">{group.groupId}</div>
-                            <div className="text-[10px] font-mono text-zinc-600 mt-0.5 uppercase tracking-widest">GROUP_OBJ</div>
+                            <div className="text-[13px] font-mono text-ink truncate max-w-[280px]" title={group.groupId}>{group.groupId}</div>
                           </div>
                           <button
-                            className="ml-2 p-1.5 text-zinc-500 hover:text-emerald-400 hover:bg-zinc-900 rounded-none opacity-0 group-hover/row:opacity-100 transition-all focus:outline-none"
-                            title="Copy Group ID"
+                            className="shrink-0 p-2 text-muted hover:text-accent hover:bg-accent-soft rounded-md transition-colors"
+                            title="Copy group ID"
+                            aria-label={`Copy group ID ${group.groupId}`}
                             onClick={async () => { try { await navigator.clipboard.writeText(group.groupId); } catch {} }}
                           >
                             <Copy className="w-4 h-4" />
                           </button>
                         </div>
                       </td>
-                      <td className="px-5 py-4 whitespace-nowrap">
-                        <div className="flex items-center mt-1.5">
-                          <div className={`w-2 h-2 mr-2.5 shadow-[0_0_8px_rgba(16,185,129,0.5)] ${group.members > 0 ? 'bg-emerald-500' : 'bg-zinc-700 shadow-none'}`}></div>
-                          <span className="text-sm font-bold font-mono text-zinc-300">{group.members}</span>
+                      <td className="px-3 py-1.5 whitespace-nowrap">
+                        <div className="flex items-center">
+                          <div className={`w-1.5 h-1.5 rounded-full mr-2.5 ${group.members > 0 ? 'bg-success' : 'bg-muted'}`}></div>
+                          <span className="text-[13px] font-mono tabular-nums text-ink">{group.members}</span>
                         </div>
                       </td>
-                      <td className="px-5 py-4 whitespace-nowrap">
-                        <div className="mt-1">
-                          <span className={`dev-badge ${getStateColor(group.state)}`}>{group.state}</span>
-                        </div>
+                      <td className="px-3 py-1.5 whitespace-nowrap">
+                        <span className={`dev-badge ${getStateColor(group.state)}`}>{group.state}</span>
                       </td>
-                      <td className="px-5 py-4 whitespace-nowrap">
-                        <div className="mt-1.5 text-sm text-zinc-400 font-mono font-bold uppercase">{group.protocol || 'N/A'}</div>
+                      <td className="px-3 py-1.5 whitespace-nowrap">
+                        <div className="text-[13px] text-muted">{group.protocol || 'N/A'}</div>
                       </td>
-                      <td className="px-5 py-4">
-                        <div className="mt-1">
+                      <td className="px-3 py-1.5">
                           {group.subscriptions.length > 0 ? (
-                            <div className={`grid gap-1.5 ${isOpen ? 'grid-cols-1' : 'grid-cols-3'} max-w-3xl`}>
+                            <div className="flex flex-wrap gap-1.5 min-w-48 max-w-lg">
                               {(isOpen ? group.subscriptions : group.subscriptions.slice(0, 6)).map((topic, i) => (
-                                <span key={i} className="dev-badge bg-zinc-950 border-zinc-800 text-zinc-300 truncate">
+                                <span key={i} title={topic} className="dev-badge font-mono bg-subtle border-line text-ink truncate max-w-48">
                                   {topic}
                                 </span>
                               ))}
                             </div>
                           ) : (
-                            <span className="text-xs font-mono font-bold text-zinc-600 uppercase tracking-widest">NO_SUBSCRIPTIONS</span>
+                            <span className="text-xs font-semibold text-muted">No subscriptions</span>
                           )}
-                        </div>
                       </td>
-                      <td className="px-5 py-4 text-right whitespace-nowrap">
-                        <div className="mt-1">
+                      <td className="px-3 py-1.5 text-right whitespace-nowrap">
                           {group.subscriptions.length > 6 && (
                             <button
                               onClick={() => toggleExpand(group.groupId)}
-                              className="dev-btn py-1 px-2 text-[10px] inline-flex items-center"
+                              aria-expanded={isOpen}
+                              aria-label={`${isOpen ? 'Show fewer' : 'Show all'} subscriptions for ${group.groupId}`}
+                              className="dev-btn inline-flex items-center"
                             >
-                              {isOpen ? (<><ChevronUp className="w-3.5 h-3.5 mr-1" /> LESS</>) : (<><ChevronDown className="w-3.5 h-3.5 mr-1" /> ALL</>)}
+                              {isOpen ? (<><ChevronUp className="w-3.5 h-3.5 mr-1" /> Less</>) : (<><ChevronDown className="w-3.5 h-3.5 mr-1" /> All</>)}
                             </button>
                           )}
-                        </div>
                       </td>
                     </tr>
                   );

@@ -1,86 +1,50 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getKafkaService } from '@/lib/kafka';
+import { getKafkaService, KafkaOperationError, validatePartitionCount, validateSelectedProfileId, validateRequestBody, validateTopicConfigs, validateTopicName } from '@/lib/kafka';
+import { readTopicProfileId, topicApiError } from './topic-api';
 
+// @group APIEndpoints > Topics : List topics and actual consumer metadata for the selected profile
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const profileId = searchParams.get('profileId') || undefined;
-    
-    const kafkaService = getKafkaService(profileId);
-    await kafkaService.connect();
-    const topics = await kafkaService.getTopicsWithConsumerInfo();
-    
-    return NextResponse.json(topics);
+    const service = await getKafkaService(readTopicProfileId(request));
+    await service.connect();
+    return NextResponse.json(await service.getTopicsWithConsumerInfo());
   } catch (error) {
-    console.error('Error fetching topics:', error);
-    return NextResponse.json(
-      { 
-        error: 'Failed to fetch topics',
-        message: error instanceof Error ? error.message : 'Unknown error',
-        details: 'Make sure the selected Kafka server is running and accessible'
-      },
-      { status: 500 }
-    );
+    return topicApiError(error, 'Failed to fetch topics. Check the selected Kafka cluster.');
   }
 }
 
+// @group APIEndpoints > Topics : Create a topic with validated settings and broker configuration
 export async function POST(request: NextRequest) {
   try {
-    const { name, partitions, replicationFactor, configs, profileId } = await request.json();
-    
-    if (!name) {
-      return NextResponse.json(
-        { error: 'Topic name is required' },
-        { status: 400 }
-      );
+    const body: unknown = await request.json();
+    validateRequestBody(body);
+    const { name, partitions = 1, replicationFactor = 1, configs = {}, profileId } = body;
+    validateTopicName(name);
+    validatePartitionCount(partitions);
+    validateSelectedProfileId(profileId);
+    validateTopicConfigs(configs);
+    if (typeof replicationFactor !== 'number' || !Number.isInteger(replicationFactor) || replicationFactor < 1 || replicationFactor > 32767) {
+      throw new KafkaOperationError('Replication factor must be an integer between 1 and 32767', 400);
     }
-
-    const kafkaService = getKafkaService(profileId);
-    await kafkaService.connect();
-    
-    // Create topic with basic parameters
-    await kafkaService.createTopic(name, partitions || 1, replicationFactor || 1);
-    
-    // If configs are provided, we would apply them here
-    // For now, just log them as KafkaJS topic creation with configs
-    // requires a more complex setup
-    if (configs && Object.keys(configs).length > 0) {
-      console.log(`Topic ${name} created with configs:`, configs);
-    }
-    
-    return NextResponse.json({ message: 'Topic created successfully' });
+    const service = await getKafkaService(profileId);
+    await service.connect();
+    await service.createTopic(name, partitions, replicationFactor, configs);
+    return NextResponse.json({ message: 'Topic created successfully' }, { status: 201 });
   } catch (error) {
-    console.error('Error creating topic:', error);
-    return NextResponse.json(
-      { error: 'Failed to create topic' },
-      { status: 500 }
-    );
+    return topicApiError(error, 'Failed to create topic. Check the selected Kafka cluster.');
   }
 }
 
+// @group APIEndpoints > Topics : Delete a validated topic on the requested profile
 export async function DELETE(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const topicName = searchParams.get('name');
-    const profileId = searchParams.get('profileId') || undefined;
-    
-    if (!topicName) {
-      return NextResponse.json(
-        { error: 'Topic name is required' },
-        { status: 400 }
-      );
-    }
-
-    const kafkaService = getKafkaService(profileId);
-    await kafkaService.connect();
-    await kafkaService.deleteTopic(topicName);
-    
+    const name = new URL(request.url).searchParams.get('name');
+    validateTopicName(name);
+    const service = await getKafkaService(readTopicProfileId(request, true));
+    await service.connect();
+    await service.deleteTopic(name);
     return NextResponse.json({ message: 'Topic deleted successfully' });
   } catch (error) {
-    console.error('Error deleting topic:', error);
-    return NextResponse.json(
-      { error: 'Failed to delete topic' },
-      { status: 500 }
-    );
+    return topicApiError(error, 'Failed to delete topic. Check the selected Kafka cluster.');
   }
 }

@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { Send, MessageSquare, Plus, X, Sparkles, FileJson, Check, AlertCircle, Code, Eye, RefreshCw, Clock, Copy, Eraser, Minimize2, Info } from 'lucide-react';
-import { useActiveProfileId } from '@/contexts/ServerContext';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Send, MessageSquare, Plus, X, FileJson, Check, AlertCircle, Code, Eye, RefreshCw, Clock, Copy, Eraser, Minimize2, Info } from 'lucide-react';
+import { useServer } from '@/contexts/ServerContext';
 
+// @group Types : Component data contracts
 interface MessageProducerProps {
   topics: string[];
   connectionError?: string | null;
@@ -19,8 +20,9 @@ interface PreviewMessage {
   headers?: Record<string, string>;
 }
 
+// @group BusinessLogic : Component state and interactions
 export default function MessageProducer({ topics, connectionError }: MessageProducerProps) {
-  const selectedProfileId = useActiveProfileId();
+  const { selectedProfileId, activeProfile, connectionKey } = useServer();
   const [selectedTopic, setSelectedTopic] = useState('');
   const [messageKey, setMessageKey] = useState('');
   const [messageValue, setMessageValue] = useState('');
@@ -35,10 +37,16 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
   const [showPreview, setShowPreview] = useState(false);
   const [previewMessages, setPreviewMessages] = useState<PreviewMessage[]>([]);
   const [loadingPreview, setLoadingPreview] = useState(false);
-  const [maxMessageSize, setMaxMessageSize] = useState<number>(1048576); // default 1MB
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewDropped, setPreviewDropped] = useState(0);
+  const maxMessageSize = activeProfile?.settings.maxMessageSize ?? 1048576;
   const [copied, setCopied] = useState(false);
+  const exitEditorRef = useRef(false);
+  const topicProfileRef = useRef(selectedProfileId);
+  const previewSessionRef = useRef<{ id: string; profileId: string; controller: AbortController } | null>(null);
+  const previewGenerationRef = useRef(0);
 
-  // JSON validation and formatting
+  // @group Validation : Validate and format message JSON
   const validateJson = (value: string) => {
     if (!isJsonMode || !value.trim()) {
       setIsValidJson(true);
@@ -89,31 +97,41 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Escape') {
+      exitEditorRef.current = true;
+      return;
+    }
+    if (e.key === 'Tab' && (exitEditorRef.current || !isJsonMode)) {
+      exitEditorRef.current = false;
+      return;
+    }
+    exitEditorRef.current = false;
+
     // Auto-format JSON with Ctrl+Shift+F
     if (e.ctrlKey && e.shiftKey && e.key === 'F' && isJsonMode) {
       e.preventDefault();
       formatJson();
     }
-    
+
     // Enhanced tab behavior for JSON
     if (e.key === 'Tab') {
       e.preventDefault();
       const textarea = e.currentTarget;
       const start = textarea.selectionStart;
       const end = textarea.selectionEnd;
-      
+
       if (e.shiftKey) {
         // Shift+Tab: Remove indentation
         const lines = messageValue.split('\n');
         const startLine = messageValue.substring(0, start).split('\n').length - 1;
         const endLine = messageValue.substring(0, end).split('\n').length - 1;
-        
+
         for (let i = startLine; i <= endLine; i++) {
           if (lines[i].startsWith('  ')) {
             lines[i] = lines[i].substring(2);
           }
         }
-        
+
         const newValue = lines.join('\n');
         setMessageValue(newValue);
         validateJson(newValue);
@@ -122,11 +140,11 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
         const lines = messageValue.split('\n');
         const startLine = messageValue.substring(0, start).split('\n').length - 1;
         const endLine = messageValue.substring(0, end).split('\n').length - 1;
-        
+
         for (let i = startLine; i <= endLine; i++) {
           lines[i] = '  ' + lines[i];
         }
-        
+
         const newValue = lines.join('\n');
         setMessageValue(newValue);
         validateJson(newValue);
@@ -150,19 +168,6 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
   const totalBytes = valueBytes; // Kafka max.message.bytes applies to the record value payload commonly; keys/headers are small
   const sizePercent = Math.min(100, Math.round((totalBytes / maxMessageSize) * 100));
 
-  useEffect(() => {
-    // Load settings to get maxMessageSize
-    (async () => {
-      try {
-        const res = await fetch('/api/settings');
-        const data = await res.json();
-        if (data?.settings?.maxMessageSize) setMaxMessageSize(data.settings.maxMessageSize);
-      } catch {
-        // keep default
-      }
-    })();
-  }, []);
-
   const removeHeader = (key: string) => {
     setHeaders(prev => {
       const newHeaders = { ...prev };
@@ -171,6 +176,7 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
     });
   };
 
+  // @group APIEndpoints : Publish messages and load previews
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTopic || !messageValue.trim()) return;
@@ -202,7 +208,7 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
 
   const result = await response.json();
   setLastSentMessage(typeof result?.message === 'string' ? result.message : 'Message sent successfully');
-      
+
       // Reset form
   setMessageKey('');
   setMessageValue('');
@@ -230,107 +236,142 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
     }
   };
 
+  // @group BusinessLogic > Preview : A one-shot isolated sample always releases its consumer
+  const cancelPreview = useCallback(() => {
+    previewGenerationRef.current += 1;
+    const session = previewSessionRef.current;
+    previewSessionRef.current = null;
+    if (!session) return;
+    session.controller.abort();
+    void fetch('/api/messages/consume', {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ sessionId: session.id, profileId: session.profileId }),
+    }).catch(() => undefined);
+  }, []);
+
   const fetchPreviewMessages = useCallback(async () => {
-    if (!selectedTopic) return;
-    
+    if (!selectedTopic || !selectedProfileId || topicProfileRef.current !== selectedProfileId) return;
+    cancelPreview();
+    const generation = previewGenerationRef.current;
+    const session = { id: crypto.randomUUID(), profileId: selectedProfileId, controller: new AbortController() };
+    previewSessionRef.current = session;
     setLoadingPreview(true);
+    setPreviewError(null);
+    setPreviewDropped(0);
+    setPreviewMessages([]);
     try {
       const response = await fetch('/api/messages/consume', {
         method: 'POST',
+        signal: session.controller.signal,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           topics: [selectedTopic],
-          groupId: 'preview-consumer-group',
+          sessionId: session.id,
+          fromBeginning: true,
           maxMessages: 10,
-          profileId: selectedProfileId
+          profileId: session.profileId,
         })
       });
-      
-      if (response.ok) {
-        const messages = await response.json();
-        setPreviewMessages(messages);
-      } else {
-        console.error('Failed to fetch preview messages');
-        setPreviewMessages([]);
-      }
+      const result = await response.json();
+      if (generation !== previewGenerationRef.current) return;
+      if (!response.ok) throw new Error(result.error || 'Unable to load preview');
+      if (result.sessionId !== session.id) throw new Error('Unexpected inspection session response');
+      setPreviewMessages(result.messages);
+      setPreviewDropped(result.droppedMessages ?? 0);
     } catch (error) {
-      console.error('Error fetching preview messages:', error);
-      setPreviewMessages([]);
+      if (generation === previewGenerationRef.current) setPreviewError(error instanceof Error ? error.message : 'Unable to load preview');
     } finally {
-      setLoadingPreview(false);
+      try {
+        const response = await fetch('/api/messages/consume', {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+          body: JSON.stringify({ sessionId: session.id, profileId: session.profileId }),
+        });
+        if (!response.ok) throw new Error('Could not confirm preview cleanup. Automatic cleanup will retry.');
+      } catch {
+        if (generation === previewGenerationRef.current) setPreviewError('Could not confirm preview cleanup. Automatic cleanup will retry.');
+      }
+      if (generation === previewGenerationRef.current) {
+        previewSessionRef.current = null;
+        setLoadingPreview(false);
+      }
     }
-  }, [selectedTopic, selectedProfileId]);
+  }, [selectedTopic, selectedProfileId, cancelPreview]);
 
-  // Auto-fetch preview when topic changes and preview is enabled
   useEffect(() => {
-    if (showPreview && selectedTopic) {
-      fetchPreviewMessages();
-    }
-  }, [selectedTopic, showPreview, fetchPreviewMessages]);
+    cancelPreview();
+    setSelectedTopic('');
+    setPreviewMessages([]);
+    setLastSentMessage(null);
+  }, [connectionKey, cancelPreview]);
+
+  // @group BusinessLogic > Lifecycle : Selection changes and unmount discard late responses
+  useEffect(() => {
+    setPreviewMessages([]);
+    setPreviewError(null);
+    setLoadingPreview(false);
+    if (showPreview && selectedTopic) void fetchPreviewMessages();
+    return cancelPreview;
+  }, [selectedTopic, showPreview, fetchPreviewMessages, cancelPreview]);
+
+  useEffect(() => {
+    window.addEventListener('pagehide', cancelPreview);
+    return () => window.removeEventListener('pagehide', cancelPreview);
+  }, [cancelPreview]);
 
   return (
     <div className="space-y-4">
-      {/* Compact Header */}
-      <div className="h-16 px-5 dev-card flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <div className="w-10 h-10 bg-zinc-900 border border-zinc-800 flex items-center justify-center">
-            <MessageSquare className="w-5 h-5 text-emerald-500" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold font-mono text-zinc-100 tracking-tight uppercase">Message Producer</h1>
-            <p className="text-xs font-mono text-zinc-500 uppercase tracking-widest">Send messages to Kafka topics</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-5">
-          <div className="hidden md:block text-right mr-2">
-            <div className="text-xl font-bold font-mono text-emerald-400 leading-none">{topics.length}</div>
-            <div className="text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest mt-1">TOPICS</div>
-          </div>
+      {/* @group Presentation : Page header and workspace controls */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-xl font-semibold text-ink tracking-tight">Message producer</h1>
+        <div className="flex items-center gap-3">
           <button
             onClick={() => setShowPreview(!showPreview)}
+            aria-pressed={showPreview}
             className="dev-btn inline-flex items-center"
           >
-            <Eye className="w-4 h-4 mr-2 text-emerald-500" /> {showPreview ? 'HIDE_PREVIEW' : 'SHOW_PREVIEW'}
+            <Eye className="w-4 h-4 mr-2 text-accent" /> {showPreview ? 'Hide preview' : 'Show preview'}
           </button>
         </div>
       </div>
 
       {connectionError ? (
-        <div className="text-center py-16 dev-card">
-          <div className="w-24 h-24 bg-zinc-900 border border-zinc-800 flex items-center justify-center mx-auto mb-6">
-            <AlertCircle className="w-10 h-10 text-red-500" />
+        <div className="text-center px-4 py-10 dev-card">
+          <div className="w-10 h-10 rounded-full bg-subtle flex items-center justify-center mx-auto mb-3">
+            <AlertCircle className="w-6 h-6 text-danger" />
           </div>
-          <h3 className="text-sm font-mono font-bold text-zinc-300 mb-2 uppercase tracking-widest">CONNECTION_ERROR</h3>
-          <p className="text-xs font-mono text-zinc-500 max-w-md mx-auto uppercase tracking-widest">
+          <h3 className="text-sm font-semibold text-ink mb-2">Connection unavailable</h3>
+          <p className="text-sm text-muted max-w-md mx-auto">
             Unable to connect to the Kafka server.
           </p>
         </div>
       ) : topics.length === 0 ? (
-        <div className="text-center py-16 dev-card">
-          <div className="w-24 h-24 bg-zinc-900 border border-zinc-800 flex items-center justify-center mx-auto mb-6">
-            <MessageSquare className="w-10 h-10 text-zinc-600" />
+        <div className="text-center px-4 py-10 dev-card">
+          <div className="w-10 h-10 rounded-full bg-subtle flex items-center justify-center mx-auto mb-3">
+            <MessageSquare className="w-6 h-6 text-muted" />
           </div>
-          <h3 className="text-sm font-mono font-bold text-zinc-300 mb-2 uppercase tracking-widest">NO_TOPICS_AVAILABLE</h3>
-          <p className="text-xs font-mono text-zinc-500 max-w-md mx-auto uppercase tracking-widest">
+          <h3 className="text-sm font-semibold text-ink mb-2">No topics available</h3>
+          <p className="text-sm text-muted max-w-md mx-auto">
             Create a topic first to start sending messages.
           </p>
         </div>
       ) : (
-        <div className="space-y-6">
+        <div className="space-y-4">
           <div className="dev-card">
-            <form onSubmit={handleSendMessage} className="p-6 space-y-6">
+            <form onSubmit={handleSendMessage} className="p-4 space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
             {/* Topic Selection */}
-            <div className="space-y-2">
-              <label className="block text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest">
-                TOPIC <span className="text-emerald-500">*</span>
+            <div className="space-y-1.5">
+              <label htmlFor="producer-topic" className="block text-sm font-medium text-ink">
+                Topic <span className="text-muted" aria-hidden="true">*</span>
               </label>
               <select
+                id="producer-topic"
                 value={selectedTopic}
-                onChange={(e) => setSelectedTopic(e.target.value)}
-                className="w-full dev-input"
+                onChange={(e) => { topicProfileRef.current = selectedProfileId; setSelectedTopic(e.target.value); }}
+                className="w-full dev-input font-mono"
                 required
               >
-                <option value="">CHOOSE_A_TOPIC...</option>
+                <option value="">Choose a topic...</option>
                 {topics.map((topic) => (
                   <option key={topic} value={topic}>
                     {topic}
@@ -340,38 +381,41 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
             </div>
 
             {/* Message Key */}
-            <div className="space-y-2">
-              <label className="block text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest">
-                MESSAGE_KEY <span className="text-zinc-600 font-normal">(OPTIONAL)</span>
+            <div className="space-y-1.5">
+              <label htmlFor="producer-key" className="block text-sm font-medium text-ink">
+                Message key <span className="text-muted font-normal">(optional)</span>
               </label>
               <input
+                id="producer-key"
                 type="text"
                 value={messageKey}
                 onChange={(e) => setMessageKey(e.target.value)}
                 placeholder="Enter message key"
-                className="w-full dev-input"
+                className="w-full dev-input font-mono"
               />
+            </div>
             </div>
 
             {/* Message Value */}
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <label className="block text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest">
-                  MESSAGE_VALUE <span className="text-emerald-500">*</span>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <label htmlFor="producer-value" className="block text-sm font-medium text-ink">
+                  Message value <span className="text-muted" aria-hidden="true">*</span>
                 </label>
-                <div className="flex items-center space-x-2">
+                <div className="flex flex-wrap items-center gap-2">
                   {/* JSON/Text Mode Toggle */}
                   <button
                     type="button"
                     onClick={() => setIsJsonMode(!isJsonMode)}
-                    className={`dev-btn py-1 px-3 inline-flex items-center text-[10px] ${
+                    aria-pressed={isJsonMode}
+                    className={`dev-btn py-1 px-3 inline-flex items-center text-xs ${
                       isJsonMode
-                        ? 'border-emerald-500/50 text-emerald-400 bg-emerald-950/20'
+                        ? 'border-accent/40 text-accent bg-accent-soft'
                         : ''
                     }`}
                   >
                     <FileJson className="w-3.5 h-3.5 mr-1.5" />
-                    {isJsonMode ? 'JSON_MODE' : 'TEXT_MODE'}
+                    {isJsonMode ? 'JSON mode' : 'Text mode'}
                   </button>
 
                   {/* Format JSON Button */}
@@ -380,10 +424,10 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
                       type="button"
                       onClick={formatJson}
                       disabled={!messageValue.trim() || !isValidJson}
-                      className="dev-btn py-1 px-3 inline-flex items-center text-[10px] disabled:opacity-50"
+                      className="dev-btn py-1 px-3 inline-flex items-center text-xs disabled:opacity-50"
                     >
                       <Code className="w-3.5 h-3.5 mr-1.5" />
-                      FORMAT
+                      Format
                     </button>
                   )}
 
@@ -393,10 +437,10 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
                       type="button"
                       onClick={minifyJson}
                       disabled={!messageValue.trim() || !isValidJson}
-                      className="dev-btn py-1 px-3 inline-flex items-center text-[10px] disabled:opacity-50"
+                      className="dev-btn py-1 px-3 inline-flex items-center text-xs disabled:opacity-50"
                     >
                       <Minimize2 className="w-3.5 h-3.5 mr-1.5" />
-                      MINIFY
+                      Minify
                     </button>
                   )}
 
@@ -404,10 +448,10 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
                   <button
                     type="button"
                     onClick={generateSampleMessage}
-                    className="dev-btn py-1 px-3 inline-flex items-center text-[10px] border-cyan-500/30 text-cyan-400 hover:border-cyan-500 hover:bg-cyan-950/30"
+                    className="dev-btn py-1 px-3 inline-flex items-center text-xs border-line text-accent hover:border-accent hover:bg-accent-soft"
                   >
-                    <Sparkles className="w-3.5 h-3.5 mr-1.5" />
-                    SAMPLE
+                    <FileJson className="w-3.5 h-3.5 mr-1.5" />
+                    Sample
                   </button>
 
                   {/* Copy & Clear */}
@@ -421,37 +465,37 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
                       } catch {}
                     }}
                     disabled={!messageValue}
-                    className="dev-btn py-1 px-3 inline-flex items-center text-[10px] disabled:opacity-50"
+                    className="dev-btn py-1 px-3 inline-flex items-center text-xs disabled:opacity-50"
                   >
-                    <Copy className="w-3.5 h-3.5 mr-1.5" /> {copied ? 'COPIED' : 'COPY'}
+                    <Copy className="w-3.5 h-3.5 mr-1.5" /> {copied ? 'Copied' : 'Copy'}
                   </button>
                   <button
                     type="button"
                     onClick={() => setMessageValue('')}
                     disabled={!messageValue}
-                    className="dev-btn py-1 px-3 inline-flex items-center text-[10px] disabled:opacity-50 border-red-500/30 text-red-400 hover:border-red-500 hover:bg-red-950/30"
+                    className="dev-btn py-1 px-3 inline-flex items-center text-xs disabled:opacity-50 border-danger/30 text-danger hover:border-danger hover:bg-danger/5"
                   >
-                    <Eraser className="w-3.5 h-3.5 mr-1.5" /> CLEAR
+                    <Eraser className="w-3.5 h-3.5 mr-1.5" /> Clear
                   </button>
                 </div>
               </div>
 
               {/* JSON Validation Status */}
               {isJsonMode && messageValue.trim() && (
-                <div className={`flex items-center space-x-1.5 text-xs font-mono font-bold uppercase tracking-widest ${
+                <div id="producer-validation" role="status" className={`flex items-center space-x-1.5 text-xs font-medium ${
                   isValidJson
-                    ? 'text-emerald-500'
-                    : 'text-red-500'
+                    ? 'text-success'
+                    : 'text-danger'
                 }`}>
                   {isValidJson ? (
                     <>
                       <Check className="w-4 h-4" />
-                      <span>VALID_JSON</span>
+                      <span>Valid JSON</span>
                     </>
                   ) : (
                     <>
                       <AlertCircle className="w-4 h-4" />
-                      <span>INVALID_JSON: {jsonError}</span>
+                      <span>Invalid JSON: {jsonError}</span>
                     </>
                   )}
                 </div>
@@ -460,19 +504,22 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
               {/* Enhanced Textarea with JSON Features */}
               <div className="relative group">
                 <textarea
+                  id="producer-value"
+                  aria-invalid={isJsonMode && !!messageValue.trim() && !isValidJson}
+                  aria-describedby={isJsonMode && messageValue.trim() ? 'producer-keyboard-hint producer-validation' : 'producer-keyboard-hint'}
                   value={messageValue}
                   onChange={(e) => handleMessageValueChange(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder={isJsonMode 
+                  placeholder={isJsonMode
                     ? '{\n  "key": "value",\n  "timestamp": "' + new Date().toISOString() + '"\n}'
                     : "Enter message content"
                   }
                   rows={10}
-                  className={`w-full dev-input leading-relaxed resize-none ${
+                  className={`w-full dev-input font-mono text-sm leading-relaxed resize-y min-h-64 ${
                     isJsonMode && messageValue.trim() && !isValidJson
-                      ? '!border-red-500 !focus:border-red-500'
+                      ? '!border-danger focus:!border-danger'
                       : ''
-                  } ${isJsonMode ? 'pl-12' : 'pl-4'}`}
+                  }`}
                   style={{
                     lineHeight: '1.5',
                     tabSize: 2,
@@ -480,33 +527,27 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
                   spellCheck={false}
                   required
                 />
-                
-                {/* Line Numbers Overlay (for JSON mode) */}
-                {isJsonMode && messageValue && (
-                  <div className="absolute left-3 top-3 text-xs text-zinc-600 font-mono pointer-events-none select-none w-6 text-right opacity-70 group-hover:opacity-100 transition-opacity">
-                    {messageValue.split('\n').map((_, index) => (
-                      <div key={index} style={{ lineHeight: '1.5', height: '21px' }}>
-                        {index + 1}
-                      </div>
-                    ))}
-                  </div>
-                )}
+
               </div>
 
+              <p id="producer-keyboard-hint" className="text-xs text-muted">
+                {isJsonMode ? 'Ctrl+Shift+F to format. Press Escape, then Tab to leave the editor.' : 'Enter the message exactly as it should be published.'}
+              </p>
+
               {/* Size meter & limit info */}
-              <div className="flex items-center justify-between text-[10px] font-mono font-bold uppercase tracking-widest text-zinc-500">
-                <div className="flex items-center gap-3">
-                  <div className="w-48 h-1 bg-zinc-900 overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted">
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="w-28 h-1 rounded-full bg-line overflow-hidden">
                     <div
-                      className={`${totalBytes > maxMessageSize ? 'bg-red-500' : 'bg-emerald-500'} h-full transition-all duration-300 ease-out`}
+                      className={`${totalBytes > maxMessageSize ? 'bg-danger' : 'bg-success'} h-full transition-all duration-300 ease-out`}
                       style={{ width: `${sizePercent}%` }}
                     />
                   </div>
-                  <span>{totalBytes.toLocaleString()} / {maxMessageSize.toLocaleString()} BYTES</span>
+                  <span>{totalBytes.toLocaleString()} / {maxMessageSize.toLocaleString()} bytes</span>
                 </div>
-                <div className="flex items-center gap-1 text-zinc-600" title="Maximum message size allowed by current settings">
+                <div className="flex items-center gap-1 text-muted" title="Maximum message size allowed by current settings">
                   <Info className="w-3 h-3" />
-                  <span>MAX_PAYLOAD_SIZE</span>
+                  <span>Maximum payload size</span>
                 </div>
               </div>
             </div>
@@ -514,25 +555,26 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
             {/* Headers Section */}
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <label className="block text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest">
-                  HEADERS <span className="text-zinc-600 font-normal">(OPTIONAL)</span>
-                </label>
-                <FileJson className="w-4 h-4 text-zinc-600" />
+                <h2 className="block text-sm font-medium text-ink">
+                  Headers <span className="text-muted font-normal">(optional)</span>
+                </h2>
+                <FileJson className="w-4 h-4 text-muted" />
               </div>
 
               {/* Existing Headers */}
               {Object.entries(headers).length > 0 && (
                 <div className="space-y-2">
                   {Object.entries(headers).map(([key, value]) => (
-                    <div key={key} className="flex items-center space-x-3 p-3 bg-zinc-950 border border-zinc-800">
+                    <div key={key} className="flex items-center space-x-3 p-3 bg-subtle border border-line">
                       <div className="flex-1 grid grid-cols-2 gap-4">
-                        <div className="text-xs font-mono font-bold text-zinc-300 truncate">{key}</div>
-                        <div className="text-xs font-mono text-zinc-500 truncate">{value}</div>
+                        <div className="text-xs font-mono text-ink truncate">{key}</div>
+                        <div className="text-xs font-mono text-muted truncate">{value}</div>
                       </div>
                       <button
                         type="button"
                         onClick={() => removeHeader(key)}
-                        className="p-1.5 text-zinc-600 hover:text-red-500 hover:bg-zinc-900 transition-colors"
+                        aria-label={`Remove header ${key}`}
+                        className="p-1.5 text-muted hover:text-danger hover:bg-subtle transition-colors"
                       >
                         <X className="w-4 h-4" />
                       </button>
@@ -542,28 +584,31 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
               )}
 
               {/* Add New Header */}
-              <div className="flex items-start space-x-3">
-                <div className="flex-1">
+              <div className="flex flex-wrap items-start gap-3">
+                <div className="min-w-40 flex-1">
                   <input
+                    aria-label="Header key"
                     type="text"
                     value={newHeaderKey}
                     onChange={(e) => setNewHeaderKey(e.target.value)}
-                    placeholder="HEADER_KEY"
-                    className="w-full dev-input uppercase tracking-widest text-[10px]"
+                    placeholder="Header key"
+                    className="w-full dev-input font-mono text-sm"
                   />
                 </div>
-                <div className="flex-1">
+                <div className="min-w-40 flex-1">
                   <input
+                    aria-label="Header value"
                     type="text"
                     value={newHeaderValue}
                     onChange={(e) => setNewHeaderValue(e.target.value)}
-                    placeholder="HEADER_VALUE"
-                    className="w-full dev-input uppercase tracking-widest text-[10px]"
+                    placeholder="Header value"
+                    className="w-full dev-input font-mono text-sm"
                   />
                 </div>
                 <button
                   type="button"
                   onClick={addHeader}
+                  aria-label="Add header"
                   disabled={!newHeaderKey.trim() || !newHeaderValue.trim()}
                   className="dev-btn px-4 py-2 disabled:opacity-50"
                 >
@@ -573,25 +618,27 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
             </div>
 
             {/* Send Button */}
-            <div className="flex items-center justify-between pt-6 mt-6 border-t border-zinc-800">
-              <div className="flex items-center space-x-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-line">
+              <div className="flex flex-wrap items-center gap-3">
                 <button
                   type="submit"
                   disabled={sending || !selectedTopic || !messageValue.trim() || (totalBytes > maxMessageSize)}
                   className="dev-btn-primary inline-flex items-center disabled:opacity-50"
                 >
                   <Send className={`w-4 h-4 mr-2 ${sending ? 'animate-pulse' : ''}`} />
-                  {sending ? 'SENDING...' : 'SEND_MESSAGE'}
+                  {sending ? 'Sending...' : 'Send message'}
                 </button>
-                
+
                 <button
                   type="button"
                   onClick={async () => {
                     if (!selectedTopic) return;
+                    if (!window.confirm(`Purge retained records from topic "${selectedTopic}" on cluster "${activeProfile?.name || selectedProfileId}"? This cannot be undone. The topic and its configuration will be preserved.`)) return;
                     setSending(true);
                     try {
-                      const response = await fetch(`/api/topics/${selectedTopic}/cleanup?profileId=${encodeURIComponent(selectedProfileId || '')}`, { method: 'POST' });
-                      if (!response.ok) throw new Error('Failed to purge topic');
+                      const response = await fetch(`/api/topics/${encodeURIComponent(selectedTopic)}/cleanup?profileId=${encodeURIComponent(selectedProfileId)}`, { method: 'POST' });
+                      const result = await response.json();
+                      if (!response.ok) throw new Error(result.error || 'Failed to purge topic');
                       setLastSentMessage('Topic purged successfully');
                     } catch (err) {
                       setLastSentMessage(`Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
@@ -601,19 +648,19 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
                     }
                   }}
                   disabled={sending || !selectedTopic}
-                  className="dev-btn inline-flex items-center border-red-500/30 text-red-400 hover:border-red-500 hover:bg-red-950/30 disabled:opacity-50"
-                  title="Clear all messages from this topic (1 click)"
+                  className="dev-btn inline-flex items-center border-danger/30 text-danger hover:border-danger hover:bg-danger/5 disabled:opacity-50"
+                  title="Purge retained records after confirmation"
                 >
                   <Eraser className="w-4 h-4 mr-2" />
-                  PURGE_TOPIC
+                  Purge topic
                 </button>
               </div>
 
               {lastSentMessage && (
-                <div className={`text-xs font-mono font-bold px-4 py-2 border uppercase tracking-widest ${
-                  lastSentMessage.startsWith('Error:') 
-                    ? 'text-red-400 bg-red-950/30 border-red-900' 
-                    : 'text-emerald-400 bg-emerald-950/30 border-emerald-900'
+                <div role="status" className={`text-sm rounded-md px-4 py-2 border ${
+                  lastSentMessage.startsWith('Error:')
+                    ? 'text-danger bg-danger/5 border-danger/20'
+                    : 'text-success bg-success/10 border-success/20'
                 }`}>
                   {lastSentMessage}
                 </div>
@@ -625,14 +672,14 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
           {/* Message Preview Section */}
           {showPreview && selectedTopic && (
             <div className="dev-card">
-              <div className="p-6">
-                <div className="flex items-center justify-between mb-6 border-b border-zinc-800 pb-4">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-8 h-8 bg-zinc-900 border border-zinc-800 flex items-center justify-center">
-                      <Eye className="w-4 h-4 text-emerald-500" />
+              <div className="p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-3 border-b border-line pb-3">
+                  <div className="flex min-w-0 flex-1 items-center gap-3">
+                    <div className="w-8 h-8 shrink-0 rounded-md bg-subtle border border-line flex items-center justify-center">
+                      <Eye className="w-4 h-4 text-accent" />
                     </div>
-                    <h3 className="text-sm font-bold font-mono text-zinc-100 uppercase tracking-widest">
-                      RECENT_MESSAGES: <span className="text-emerald-400">{selectedTopic}</span>
+                    <h3 className="min-w-0 text-sm font-semibold text-ink">
+                      Message sample: <span className="font-mono text-muted break-all">{selectedTopic}</span>
                     </h3>
                   </div>
                   <button
@@ -640,53 +687,57 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
                     disabled={loadingPreview}
                     className="dev-btn inline-flex items-center"
                   >
-                    <RefreshCw className={`w-4 h-4 mr-2 ${loadingPreview ? 'animate-spin text-emerald-500' : ''}`} />
-                    REFRESH
+                    <RefreshCw className={`w-4 h-4 mr-2 ${loadingPreview ? 'animate-spin text-accent' : ''}`} />
+                    Refresh
                   </button>
                 </div>
 
+                <p className="mb-4 text-xs text-muted">Up to 10 records from the earliest retained offsets. Refresh starts a new isolated sample.</p>
+                {previewError && <p role="alert" className="mb-4 text-sm text-danger">{previewError}</p>}
+                {previewDropped > 0 && <p role="alert" className="mb-4 text-sm text-danger">The preview buffer overflowed; {previewDropped.toLocaleString()} records were skipped. They remain in Kafka.</p>}
+
                 {loadingPreview ? (
-                  <div className="flex flex-col items-center justify-center py-12">
-                    <RefreshCw className="w-8 h-8 animate-spin text-emerald-500 mb-4" />
-                    <span className="text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest">LOADING_MESSAGES...</span>
+                  <div className="flex flex-col items-center justify-center py-8">
+                    <RefreshCw className="w-8 h-8 animate-spin text-accent mb-4" />
+                    <span className="text-xs font-semibold text-muted">Loading messages...</span>
                   </div>
                 ) : previewMessages.length === 0 ? (
-                  <div className="text-center py-12 bg-black border border-zinc-900">
-                    <div className="w-16 h-16 bg-zinc-900 border border-zinc-800 flex items-center justify-center mx-auto mb-4">
-                      <MessageSquare className="w-8 h-8 text-zinc-600" />
+                  <div className="text-center px-4 py-8 bg-surface border border-line">
+                    <div className="w-10 h-10 bg-subtle border border-line flex items-center justify-center mx-auto mb-3">
+                      <MessageSquare className="w-5 h-5 text-muted" />
                     </div>
-                    <h4 className="text-sm font-bold font-mono text-zinc-300 mb-2 uppercase tracking-widest">NO_MESSAGES_FOUND</h4>
-                    <p className="text-[10px] font-mono text-zinc-500 max-w-sm mx-auto uppercase tracking-widest">
-                      TOPIC MIGHT BE EMPTY OR NO RECENT MESSAGES.
+                    <h4 className="text-sm font-semibold text-ink mb-2">No messages found</h4>
+                    <p className="text-xs text-muted max-w-sm mx-auto">
+                      No records arrived during the preview window. Refresh to retry.
                     </p>
                   </div>
                 ) : (
-                  <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
+                  <div className="space-y-3 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
                     {previewMessages.map((message, index) => (
-                      <div key={index} className="p-4 bg-black border border-zinc-800 hover:border-zinc-700 transition-colors">
-                        <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-900">
-                          <div className="flex items-center space-x-3 text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest">
-                            <span className="flex items-center gap-1 text-emerald-400">
+                      <div key={index} className="p-4 rounded-lg bg-surface border border-line">
+                        <div className="flex items-center justify-between mb-3 pb-3 border-b border-line">
+                          <div className="flex flex-wrap items-center gap-3 text-xs text-muted">
+                            <span className="flex items-center gap-1 text-accent">
                               <Clock className="w-3.5 h-3.5" />
                               {new Date(message.timestamp).toLocaleString()}
                             </span>
-                            <span className="bg-zinc-900 border border-zinc-800 px-2 py-1">PARTITION: {message.partition}</span>
-                            <span className="bg-zinc-900 border border-zinc-800 px-2 py-1">OFFSET: {message.offset}</span>
+                            <span className="bg-subtle border border-line px-2 py-1">Partition: {message.partition}</span>
+                            <span className="bg-subtle border border-line px-2 py-1">Offset: {message.offset}</span>
                           </div>
                         </div>
-                        
+
                         {message.key && (
                           <div className="mb-4">
-                            <div className="text-[10px] font-mono font-bold text-zinc-600 mb-1.5 uppercase tracking-widest">KEY</div>
-                            <div className="text-xs font-mono bg-zinc-950 p-3 border border-zinc-800 text-zinc-300">
+                            <div className="text-xs font-semibold text-muted mb-1.5">Key</div>
+                            <div className="text-xs font-mono break-all rounded-md bg-subtle p-3 border border-line text-ink">
                               {message.key}
                             </div>
                           </div>
                         )}
-                        
+
                         <div className="mb-4">
-                          <div className="text-[10px] font-mono font-bold text-zinc-600 mb-1.5 uppercase tracking-widest">VALUE</div>
-                          <div className="text-xs font-mono bg-zinc-950 p-4 border border-zinc-800 text-emerald-500 max-h-64 overflow-y-auto custom-scrollbar whitespace-pre">
+                          <div className="text-xs font-semibold text-muted mb-1.5">Value</div>
+                          <div className="text-xs font-mono leading-relaxed rounded-md bg-subtle p-4 border border-line text-ink max-h-64 overflow-y-auto custom-scrollbar whitespace-pre">
                             {(() => {
                               try {
                                 const parsed = JSON.parse(message.value);
@@ -697,11 +748,11 @@ export default function MessageProducer({ topics, connectionError }: MessageProd
                             })()}
                           </div>
                         </div>
-                        
+
                         {message.headers && Object.keys(message.headers).length > 0 && (
                           <div>
-                            <div className="text-[10px] font-mono font-bold text-zinc-600 mb-1.5 uppercase tracking-widest">HEADERS</div>
-                            <div className="text-xs font-mono bg-zinc-950 p-3 border border-zinc-800 text-zinc-400 whitespace-pre">
+                            <div className="text-xs font-semibold text-muted mb-1.5">Headers</div>
+                            <div className="text-xs font-mono rounded-md bg-subtle p-3 border border-line text-muted overflow-x-auto whitespace-pre">
                               {JSON.stringify(message.headers, null, 2)}
                             </div>
                           </div>

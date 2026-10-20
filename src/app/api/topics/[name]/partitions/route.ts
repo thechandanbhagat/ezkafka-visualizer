@@ -1,47 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { KafkaService } from '@/lib/kafka';
+import { getKafkaService, validatePartitionCount, validateRequestBody, validateTopicName } from '@/lib/kafka';
+import { readTopicProfileId, topicApiError } from '../../topic-api';
 
-const kafkaService = new KafkaService({
-  clientId: 'kafka-visualizer-partitions',
-  brokers: ['localhost:9092'],
-});
-
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ name: string }> }
-) {
+// @group APIEndpoints > Partitions : Increase the total partition count on the requested cluster
+export async function POST(request: NextRequest, { params }: { params: Promise<{ name: string }> }) {
   try {
     const { name } = await params;
-    const body = await request.json();
-    const { count } = body;
-
-    if (!count || count < 1) {
-      return NextResponse.json(
-        { error: 'Invalid partition count' },
-        { status: 400 }
-      );
-    }
-
-    await kafkaService.connect();
-
-    // For now, simulate partition addition
-    // In a real implementation, you'd use:
-    // await admin.createPartitions({
-    //   topicPartitions: [{
-    //     topic: name,
-    //     count: count
-    //   }]
-    // });
-    
-    console.log(`Adding partitions to topic ${name}: ${count}`);
-    
-    await kafkaService.disconnect();
-    return NextResponse.json({ success: true, newPartitionCount: count });
+    validateTopicName(name);
+    const body: unknown = await request.json();
+    validateRequestBody(body);
+    validatePartitionCount(body.count);
+    const service = await getKafkaService(readTopicProfileId(request, true));
+    await service.connect();
+    await service.addPartitions(name, body.count);
+    return NextResponse.json({ success: true, newPartitionCount: body.count });
   } catch (error) {
-    console.error('Error adding partitions:', error);
-    return NextResponse.json(
-      { error: 'Failed to add partitions' },
-      { status: 500 }
-    );
+    return topicApiError(error, 'Failed to add partitions. Check the selected Kafka cluster.');
   }
 }

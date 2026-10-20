@@ -1,32 +1,36 @@
 "use client";
 
-import { useState, Fragment } from 'react';
+// @group Configuration > Imports : React, icons, and Kafka context
+import { useState, useEffect, useRef, Fragment } from 'react';
 import {
   Plus,
   Trash2,
   RefreshCw,
   Database,
   BarChart3,
-  Users,
-  MessageCircle,
   ChevronDown,
   ChevronUp,
   Edit3,
   X,
   Eraser,
   Search,
+  Unplug,
 } from "lucide-react";
-import { TopicInfo } from '@/lib/kafka';
-import { useActiveProfileId } from '@/contexts/ServerContext';
+import type { TopicInfo } from '@/lib/kafka';
+import { useServer } from '@/contexts/ServerContext';
 
+// @group Types : Topic workspace properties
 interface TopicListProps {
   topics: TopicInfo[];
   loading: boolean;
   onRefresh: (profileId?: string) => void;
+  onOpenSettings: () => void;
+  connectionError?: string | null;
 }
 
-export default function TopicList({ topics, loading, onRefresh }: TopicListProps) {
-  const selectedProfileId = useActiveProfileId();
+export default function TopicList({ topics, loading, onRefresh, onOpenSettings, connectionError }: TopicListProps) {
+  // @group Configuration > State : Topic actions, filters, and configuration editor
+  const { selectedProfileId, activeProfile } = useServer();
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newTopicName, setNewTopicName] = useState('');
   const [newTopicPartitions, setNewTopicPartitions] = useState(1);
@@ -41,9 +45,13 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
   const [configEditorError, setConfigEditorError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [cleaningAll, setCleaningAll] = useState(false);
+  const [cleaningTopic, setCleaningTopic] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [configErrors, setConfigErrors] = useState<Record<string, string>>({});
+  const configDialogRef = useRef<HTMLDivElement>(null);
   const nf = new Intl.NumberFormat();
 
-  // Layman-friendly descriptions for common Kafka topic configuration keys
+  // @group Constants : Plain-language descriptions for Kafka configuration keys
   const CONFIG_DESCRIPTIONS: Record<string, string> = {
     'cleanup.policy': 'How Kafka cleans up old data. "delete" removes old messages; "compact" keeps the latest value per key.',
     'delete.retention.ms': 'How long Kafka keeps deleted records (tombstones) before cleaning them up.',
@@ -64,6 +72,40 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
     'flush.messages': 'How many messages to accumulate before forcing a flush to disk. Very low values can impact performance.',
   };
 
+  // @group Utilities : Configuration descriptions and modal keyboard navigation
+  useEffect(() => {
+    if (!showConfigEditor) return;
+
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    configDialogRef.current?.focus();
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowConfigEditor(false);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const focusable = configDialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), [tabindex="0"]');
+      if (!focusable?.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === configDialogRef.current)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      previousFocus?.focus();
+    };
+  }, [showConfigEditor]);
+
   const getConfigTooltip = (key: string): string => {
     // Exact match first
     if (CONFIG_DESCRIPTIONS[key]) return CONFIG_DESCRIPTIONS[key];
@@ -76,18 +118,28 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
     return 'Kafka topic setting. Adjust with care as it affects storage, performance, or durability.';
   };
 
+  // @group APIEndpoints > Configuration : Read, expand, and edit topic settings
+  const topicUrl = (topicName: string, action = '') => `/api/topics/${encodeURIComponent(topicName)}${action}?profileId=${encodeURIComponent(selectedProfileId)}`;
+
+  const requireSuccess = async (response: Response, fallback: string) => {
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || fallback);
+    }
+  };
+
   const fetchTopicConfig = async (topicName: string) => {
     try {
-      const response = await fetch(`/api/topics/${topicName}/config`);
-      if (response.ok) {
-        const config = await response.json();
-        setTopicConfigs((prev) => ({ ...prev, [topicName]: config }));
-        return config as Record<string, string>;
-      }
+      const response = await fetch(topicUrl(topicName, '/config'));
+      await requireSuccess(response, 'Unable to load topic configuration.');
+      const config = await response.json() as Record<string, string>;
+      setTopicConfigs(prev => ({ ...prev, [topicName]: config }));
+      setConfigErrors(prev => ({ ...prev, [topicName]: '' }));
+      return config;
     } catch (error) {
-      console.error('Failed to fetch topic config:', error);
+      setConfigErrors(prev => ({ ...prev, [topicName]: error instanceof Error ? error.message : 'Unable to load configuration.' }));
+      throw error;
     }
-    return {} as Record<string, string>;
   };
 
   const openConfigEditor = async (topicName: string) => {
@@ -95,12 +147,7 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
     setShowConfigEditor(true);
     setConfigEditorError(null);
 
-    // If already cached, use immediately
-    if (topicConfigs[topicName]) {
-      setEditingConfig(topicConfigs[topicName]);
-      return;
-    }
-
+    setEditingConfig({});
     setConfigEditorLoading(true);
     try {
       const config = await fetchTopicConfig(topicName);
@@ -121,7 +168,7 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
     } else {
       next.add(topicName);
       if (!topicConfigs[topicName]) {
-        await fetchTopicConfig(topicName);
+        await fetchTopicConfig(topicName).catch(() => undefined);
       }
     }
     setExpandedTopics(next);
@@ -129,11 +176,14 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
 
   const updateTopicConfig = async (topicName: string, configs: Record<string, string>) => {
     setSavingConfig(true);
+    setConfigEditorError(null);
     try {
-      const response = await fetch(`/api/topics/${topicName}/config`, {
+      const changes = Object.fromEntries(Object.entries(configs).filter(([key, value]) => topicConfigs[topicName]?.[key] !== value));
+      if (!Object.keys(changes).length) { setShowConfigEditor(false); return; }
+      const response = await fetch(topicUrl(topicName, '/config'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ configs }),
+        body: JSON.stringify({ configs: changes }),
       });
       if (response.ok) {
         await fetchTopicConfig(topicName);
@@ -141,32 +191,37 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
         setSelectedTopic(null);
       } else {
         const error = await response.json();
-        alert(`Failed to update configuration: ${error.error || 'Unknown error'}`);
+        setConfigEditorError(error.error || 'Unable to update configuration.');
       }
     } catch (error) {
-      alert(`Error updating configuration: ${error}`);
+      setConfigEditorError(error instanceof Error ? error.message : 'Unable to update configuration.');
     } finally {
       setSavingConfig(false);
     }
   };
 
+  // @group APIEndpoints > Topics : Create topics and manage partitions and messages
   const addPartitions = async (topicName: string, newPartitionCount: number) => {
-    if (newPartitionCount <= 0) return;
+    const currentCount = topics.find(topic => topic.name === topicName)?.partitions ?? 0;
+    if (!Number.isSafeInteger(newPartitionCount) || newPartitionCount <= currentCount) {
+      setActionError(`Partition count must be a whole number greater than ${currentCount}.`);
+      return;
+    }
+    setActionError(null);
     try {
-      const response = await fetch(`/api/topics/${topicName}/partitions`, {
+      const response = await fetch(topicUrl(topicName, '/partitions'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ partitions: newPartitionCount }),
+        body: JSON.stringify({ count: newPartitionCount }),
       });
       if (response.ok) {
-        onRefresh();
-        alert(`Successfully added partitions to ${topicName}`);
+        onRefresh(selectedProfileId);
       } else {
         const error = await response.json();
-        alert(`Failed to add partitions: ${error.error || 'Unknown error'}`);
+        setActionError(error.error || 'Unable to add partitions.');
       }
     } catch (error) {
-      alert(`Error adding partitions: ${error}`);
+      setActionError(error instanceof Error ? error.message : 'Unable to add partitions.');
     }
   };
 
@@ -175,6 +230,7 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
     if (!newTopicName.trim()) return;
 
     setCreating(true);
+    setActionError(null);
     try {
       const response = await fetch('/api/topics', {
         method: 'POST',
@@ -189,487 +245,344 @@ export default function TopicList({ topics, loading, onRefresh }: TopicListProps
         }),
       });
 
-      if (!response.ok) {
-        throw new Error('Failed to create topic');
-      }
+      await requireSuccess(response, 'Unable to create topic.');
 
       setNewTopicName('');
       setNewTopicPartitions(1);
       setShowCreateForm(false);
-      onRefresh();
+      onRefresh(selectedProfileId);
     } catch (error) {
-      console.error('Error creating topic:', error);
+      setActionError(error instanceof Error ? error.message : 'Unable to create topic.');
     } finally {
       setCreating(false);
     }
   };
 
   const handleDeleteTopic = async (topicName: string) => {
-    if (!confirm(`Are you sure you want to delete topic "${topicName}"?`)) {
+    if (!confirm(`Delete topic "${topicName}" and all its data from "${activeProfile?.name}"? This cannot be undone.`)) {
       return;
     }
 
+    setActionError(null);
     try {
-      const response = await fetch(`/api/topics/${topicName}?profileId=${encodeURIComponent(selectedProfileId || '')}`, {
+      const response = await fetch(topicUrl(topicName), {
         method: 'DELETE',
       });
 
-      if (!response.ok) {
-        throw new Error('Failed to delete topic');
-      }
+      await requireSuccess(response, 'Unable to delete topic.');
 
       onRefresh(selectedProfileId);
     } catch (error) {
-      console.error('Error deleting topic:', error);
+      setActionError(error instanceof Error ? error.message : 'Unable to delete topic.');
     }
   };
 
-  const handleCleanupMessages = async (topicName: string, messageCount?: number) => {
+  const handleCleanupMessages = async (topicName: string) => {
+    if (cleaningAll || cleaningTopic || !confirm(`Purge retained messages from "${topicName}" on "${activeProfile?.name}"? This cannot be undone. The topic and its configuration will be preserved.`)) return;
+    setCleaningTopic(topicName);
+    setActionError(null);
     try {
-      const response = await fetch(`/api/topics/${topicName}/cleanup?profileId=${encodeURIComponent(selectedProfileId || '')}`, {
+      const response = await fetch(topicUrl(topicName, '/cleanup'), {
         method: 'POST',
       });
 
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || 'Failed to cleanup messages');
-      }
-
-      // Success is visual when the topic count drops to 0 via refresh
+      await requireSuccess(response, 'Unable to purge messages.');
       onRefresh(selectedProfileId);
     } catch (error) {
-      console.error('Error cleaning up messages:', error);
-      alert(`Error cleaning up messages: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setActionError(error instanceof Error ? error.message : 'Unable to purge messages.');
+    } finally {
+      setCleaningTopic(null);
     }
   };
 
   const handleCleanupAllTopics = async () => {
-    if (!confirm('Are you sure you want to purge all messages from ALL topics? This action cannot be undone and may take some time depending on the number of topics.')) {
+    const userTopics = topics.filter(topic => !topic.name.startsWith('__') && topic.messageCount !== 0);
+    if (cleaningAll || cleaningTopic || !confirm(`Purge retained messages from ${userTopics.length} non-internal topics on "${activeProfile?.name}"? This cannot be undone. Topic configurations will be preserved.`)) {
       return;
     }
 
     setCleaningAll(true);
+    setActionError(null);
+    const failures: string[] = [];
     try {
-      // Filter out internal topics like __consumer_offsets
-      const userTopics = topics.filter(t => !t.name.startsWith('_'));
       for (const topic of userTopics) {
-        // Only clean if there's potentially something to clean or we don't know the count
-        if (topic.messageCount !== 0) {
-          await fetch(`/api/topics/${encodeURIComponent(topic.name)}/cleanup?profileId=${encodeURIComponent(selectedProfileId || '')}`, {
+        try {
+          const response = await fetch(topicUrl(topic.name, '/cleanup'), {
             method: 'POST',
           });
+          await requireSuccess(response, 'Unable to purge messages.');
+        } catch (error) {
+          failures.push(`${topic.name}: ${error instanceof Error ? error.message : 'Unable to purge messages.'}`);
         }
       }
       onRefresh(selectedProfileId);
-    } catch (error) {
-      console.error('Error cleaning up all topics:', error);
-      alert('An error occurred while cleaning up topics. Please refresh and try again.');
+      if (failures.length) setActionError(`${userTopics.length - failures.length} of ${userTopics.length} topics purged. Failed: ${failures.join('; ')}`);
     } finally {
       setCleaningAll(false);
     }
   };
 
+  // @group BusinessLogic > Summary : Derive visible topics and counts from the current response
   const filteredTopics = topics.filter(topic =>
     topic.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+  const hasSnapshot = !connectionError && !(loading && topics.length === 0);
+  const partitionCount = topics.reduce((total, topic) => total + topic.partitions, 0);
+  const hasMessageCounts = topics.every(topic => typeof topic.messageCount === 'number');
+  const messageCount = topics.reduce((total, topic) => total + (topic.messageCount || 0), 0);
 
+  // @group Components > TopicWorkspace : Page heading, overview, and topic controls
   return (
-    <div className="space-y-4">
-      {/* Compact Header */}
-      <div className="h-16 px-5 dev-card flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <div className="w-10 h-10 bg-zinc-900 border border-zinc-800 flex items-center justify-center">
-            <Database className="w-5 h-5 text-emerald-500" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold font-mono text-zinc-100 tracking-tight">KAFKA_TOPICS</h1>
-            <p className="text-xs font-mono text-zinc-500 uppercase">Manage topics and partitions</p>
-          </div>
+    <div className="min-w-0 space-y-3">
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
+          <h1 className="text-xl font-semibold tracking-tight text-ink">Topics</h1>
+          <dl className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+            <div className="flex flex-row-reverse items-baseline gap-1.5">
+              <dt>topics</dt>
+              <dd className="font-semibold tabular-nums text-ink">{hasSnapshot ? nf.format(topics.length) : '—'}</dd>
+            </div>
+            <div className="flex flex-row-reverse items-baseline gap-1.5">
+              <dt>partitions</dt>
+              <dd className="font-semibold tabular-nums text-ink">{hasSnapshot ? nf.format(partitionCount) : '—'}</dd>
+            </div>
+            <div className="flex flex-row-reverse items-baseline gap-1.5">
+              <dt>estimated messages</dt>
+              <dd className="font-semibold tabular-nums text-ink">{hasSnapshot && hasMessageCounts ? nf.format(messageCount) : '—'}</dd>
+            </div>
+          </dl>
         </div>
-        <div className="text-right flex flex-col items-end">
-          <div className="text-xl font-bold font-mono text-emerald-400 leading-none">{topics.length}</div>
-          <div className="text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest mt-1">TOTAL_TOPICS</div>
-        </div>
-      </div>
+        <button
+          onClick={() => setShowCreateForm(true)}
+          className="dev-btn-primary inline-flex items-center gap-2 whitespace-nowrap"
+          aria-expanded={showCreateForm}
+          aria-controls="create-topic-form"
+        >
+          <Plus className="h-4 w-4" aria-hidden="true" />
+          Create topic
+        </button>
+      </header>
 
-      {/* Action Bar */}
-      <div className="flex justify-between items-center px-1">
-        <div className="flex items-center space-x-3 flex-1">
+      {actionError && <div role="alert" className="rounded-md border border-danger/20 bg-danger/5 p-4 text-sm text-danger">{actionError}</div>}
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="relative w-full sm:max-w-xs">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" aria-hidden="true" />
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search topics..."
+            aria-label="Search topics"
+            className="dev-input w-full !pl-8"
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => onRefresh(selectedProfileId)}
             disabled={loading}
-            className="dev-btn inline-flex items-center whitespace-nowrap"
+            className="dev-btn inline-flex items-center gap-2 whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin text-emerald-500' : ''}`} />
-            REFRESH
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} aria-hidden="true" />
+            {loading ? 'Refreshing...' : 'Refresh'}
           </button>
-          <div className="relative max-w-sm w-full">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="SEARCH_TOPICS..."
-              className="w-full !pl-10 pr-4 dev-input py-2"
-            />
-          </div>
-        </div>
-        <div className="flex items-center space-x-3 ml-4">
           <button
             onClick={handleCleanupAllTopics}
-            disabled={cleaningAll || topics.length === 0}
-            className="dev-btn inline-flex items-center whitespace-nowrap !text-amber-500 hover:!text-amber-400 hover:!border-amber-500"
+            disabled={cleaningAll || Boolean(cleaningTopic) || topics.length === 0}
+            className="dev-btn inline-flex items-center gap-2 whitespace-nowrap hover:!border-warning hover:!text-warning disabled:cursor-not-allowed disabled:opacity-50"
             title="Purge messages from all topics"
           >
-            <Eraser className={`w-4 h-4 mr-2 ${cleaningAll ? 'animate-pulse' : ''}`} />
-            {cleaningAll ? 'PURGING...' : 'PURGE_ALL'}
-          </button>
-          <button
-            onClick={() => setShowCreateForm(true)}
-            className="dev-btn-primary inline-flex items-center whitespace-nowrap"
-          >
-            <Plus className="w-4 h-4 mr-2" />
-            CREATE_TOPIC
+            <Eraser className={`h-4 w-4 ${cleaningAll ? 'animate-pulse' : ''}`} aria-hidden="true" />
+            {cleaningAll ? 'Purging...' : 'Purge all messages'}
           </button>
         </div>
       </div>
 
-      {/* Create Topic Form */}
+      {/* @group Components > CreateTopic : Topic creation form */}
       {showCreateForm && (
-        <div className="dev-card p-5 animate-in fade-in slide-in-from-top-4 duration-300">
-          <div className="flex items-center justify-between mb-5 border-b border-zinc-800 pb-3">
-            <h3 className="text-sm font-bold font-mono text-zinc-100 uppercase tracking-widest">Create New Topic</h3>
-            <button
-              onClick={() => setShowCreateForm(false)}
-              className="p-1.5 text-zinc-500 hover:text-emerald-400 hover:bg-zinc-900 transition-colors rounded-none focus:outline-none"
-            >
-              <Plus className="w-5 h-5 rotate-45" />
+        <section id="create-topic-form" aria-labelledby="create-topic-heading" className="dev-card p-4">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <h2 id="create-topic-heading" className="text-base font-semibold text-ink">Create a topic</h2>
+            </div>
+            <button onClick={() => setShowCreateForm(false)} aria-label="Close create topic form" className="rounded-md p-1.5 text-muted transition-colors hover:bg-subtle hover:text-ink">
+              <X className="h-5 w-5" aria-hidden="true" />
             </button>
           </div>
-          
-          <form onSubmit={handleCreateTopic} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <form onSubmit={handleCreateTopic} className="space-y-3">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div className="space-y-1.5">
-                <label className="block text-xs font-mono font-bold text-zinc-400 uppercase tracking-wider">
-                  Topic Name
-                </label>
-                <input
-                  type="text"
-                  value={newTopicName}
-                  onChange={(e) => setNewTopicName(e.target.value)}
-                  placeholder="Enter topic name"
-                  className="w-full dev-input"
-                  required
-                />
+                <label htmlFor="new-topic-name" className="block text-sm font-medium text-ink">Topic name</label>
+                <input id="new-topic-name" type="text" value={newTopicName} onChange={(e) => setNewTopicName(e.target.value)} placeholder="e.g. orders.created" className="dev-input w-full font-mono" required />
               </div>
               <div className="space-y-1.5">
-                <label className="block text-xs font-mono font-bold text-zinc-400 uppercase tracking-wider">
-                  Partitions
-                </label>
-                <input
-                  type="number"
-                  value={newTopicPartitions}
-                  onChange={(e) => setNewTopicPartitions(parseInt(e.target.value) || 1)}
-                  min="1"
-                  className="w-full dev-input"
-                />
+                <label htmlFor="new-topic-partitions" className="block text-sm font-medium text-ink">Partitions</label>
+                <input id="new-topic-partitions" type="number" value={newTopicPartitions} onChange={(e) => setNewTopicPartitions(parseInt(e.target.value) || 1)} min="1" className="dev-input w-full" />
               </div>
             </div>
-            
-            <div className="flex justify-end space-x-3 pt-4 border-t border-zinc-800 mt-6">
-              <button
-                type="button"
-                onClick={() => setShowCreateForm(false)}
-                className="dev-btn"
-              >
-                CANCEL
-              </button>
-              <button
-                type="submit"
-                disabled={creating}
-                className="dev-btn-primary disabled:opacity-50"
-              >
-                {creating ? 'CREATING...' : 'CREATE_TOPIC'}
-              </button>
+            <div className="flex justify-end gap-2 border-t border-line pt-3">
+              <button type="button" onClick={() => setShowCreateForm(false)} className="dev-btn">Cancel</button>
+              <button type="submit" disabled={creating} className="dev-btn-primary disabled:cursor-not-allowed disabled:opacity-50">{creating ? 'Creating...' : 'Create topic'}</button>
             </div>
           </form>
-        </div>
+        </section>
       )}
 
-      {/* Topics List */}
+      {/* @group Components > TopicData : Loading, connection, empty, and populated topic states */}
       {loading && topics.length === 0 ? (
-        <div className="text-center py-12">
-          <div className="w-16 h-16 bg-zinc-900 border border-zinc-800 flex items-center justify-center mx-auto mb-4">
-            <div className="animate-spin w-8 h-8 border-2 border-zinc-800 border-t-emerald-500 rounded-none"></div>
+        <div className="dev-card overflow-hidden" role="status" aria-label="Loading topics">
+          <div className="flex items-center gap-2 border-b border-line px-3 py-2 text-sm text-muted">
+            <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" /> Loading topics from your cluster...
           </div>
-          <p className="text-sm font-mono font-bold text-zinc-500 uppercase tracking-widest">Loading topics...</p>
+          <div className="divide-y divide-line" aria-hidden="true">
+            {[0, 1, 2, 3].map(row => (
+              <div key={row} className="flex h-11 items-center gap-8 px-3 motion-safe:animate-pulse">
+                <div className="h-3 w-1/3 rounded bg-subtle" />
+                <div className="h-3 w-12 rounded bg-subtle" />
+                <div className="h-3 w-20 rounded bg-subtle" />
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : connectionError && topics.length === 0 ? (
+        <div className="dev-card px-4 py-8 text-center" role="status">
+          <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-md bg-subtle text-muted"><Unplug className="h-5 w-5" aria-hidden="true" /></div>
+          <h2 className="text-base font-semibold text-ink">Unable to load topics</h2>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">We could not connect to this Kafka cluster. Check the broker connection in Settings, then try again.</p>
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
+            <button onClick={() => onRefresh(selectedProfileId)} className="dev-btn-primary inline-flex items-center gap-2"><RefreshCw className="h-4 w-4" aria-hidden="true" /> Retry connection</button>
+            <button onClick={onOpenSettings} className="dev-btn">Open settings</button>
+          </div>
         </div>
       ) : topics.length === 0 ? (
-        <div className="text-center py-16 dev-card">
-          <div className="w-24 h-24 bg-zinc-900 border border-zinc-800 flex items-center justify-center mx-auto mb-6">
-            <Database className="w-10 h-10 text-zinc-600" />
-          </div>
-          <h3 className="text-sm font-mono font-bold text-zinc-300 mb-2 uppercase tracking-widest">No Topics Found</h3>
-          <p className="text-xs font-mono text-zinc-500 max-w-md mx-auto">
-            Create your first topic to start streaming data.
-          </p>
+        <div className="dev-card px-4 py-8 text-center">
+          <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-md bg-accent-soft text-accent"><Database className="h-5 w-5" aria-hidden="true" /></div>
+          <h2 className="text-base font-semibold text-ink">Your first stream starts here</h2>
+          <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-muted">This cluster has no topics yet. Create a topic to start producing and consuming messages.</p>
+          <button onClick={() => setShowCreateForm(true)} className="dev-btn-primary mt-4 inline-flex items-center gap-2"><Plus className="h-4 w-4" aria-hidden="true" /> Create topic</button>
         </div>
       ) : (
         <div className="dev-card overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-zinc-800 text-sm">
-              <thead className="bg-zinc-950">
+            <table className="min-w-[680px] w-full divide-y divide-line text-sm" aria-label="Kafka topics" aria-busy={loading}>
+              <thead className="bg-subtle">
                 <tr>
-                  <th className="px-5 py-4 text-left text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">
-                    TOPIC_NAME
-                  </th>
-                  <th className="px-5 py-4 text-left text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">
-                    PARTITIONS
-                  </th>
-                  <th className="px-5 py-4 text-left text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">
-                    REPLICATION
-                  </th>
-                  <th className="px-5 py-4 text-left text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">
-                    MESSAGES
-                  </th>
-                  <th className="px-5 py-4 text-left text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">
-                    CONSUMERS
-                  </th>
-                  <th className="px-5 py-4 text-right text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest">
-                    ACTIONS
-                  </th>
+                  {['Topic name', 'Partitions', 'Replication', 'Est. messages', 'Consumers'].map(label => (
+                    <th key={label} scope="col" className="whitespace-nowrap px-3 py-2 text-left text-xs font-medium text-muted">{label}</th>
+                  ))}
                 </tr>
               </thead>
-              <tbody className="bg-black divide-y divide-zinc-900">
+              <tbody className="divide-y divide-line bg-surface">
                 {filteredTopics.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-5 py-8 text-center text-zinc-500 font-mono text-xs uppercase tracking-widest">
-                      NO_TOPICS_MATCH_SEARCH
+                    <td colSpan={5} className="px-4 py-8 text-center">
+                      <Search className="mx-auto mb-3 h-6 w-6 text-muted" aria-hidden="true" />
+                      <p className="font-medium text-ink">No topics match your search</p>
+                      <p className="mt-1 text-sm text-muted">Try a different topic name or clear the filter.</p>
+                      <button onClick={() => setSearchQuery('')} className="dev-btn mt-4">Clear search</button>
                     </td>
                   </tr>
-                ) : (
-                  filteredTopics.map((topic) => (
-                    <Fragment key={topic.name}>
-                    <tr className="hover:bg-zinc-900/50 transition-colors group">
-                      <td className="px-5 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
+                ) : filteredTopics.map((topic) => (
+                  <Fragment key={topic.name}>
+                    <tr className="transition-colors hover:bg-subtle/60">
+                      <td className="px-3 py-1.5">
+                        <div className="flex items-center gap-2">
                           <button
                             onClick={() => toggleTopic(topic.name)}
-                            className="p-1.5 hover:bg-zinc-800 mr-3 transition-colors rounded-none focus:outline-none"
-                            title={expandedTopics.has(topic.name) ? 'Collapse' : 'Expand'}
+                            className="shrink-0 rounded-md p-2 text-muted transition-colors hover:bg-accent-soft hover:text-accent"
+                            aria-label={`${expandedTopics.has(topic.name) ? 'Collapse' : 'Expand'} configuration for ${topic.name}`}
+                            aria-expanded={expandedTopics.has(topic.name)}
+                            aria-controls={`topic-config-details-${topic.name}`}
                           >
-                            {expandedTopics.has(topic.name) ? (
-                              <ChevronUp className="w-4 h-4 text-zinc-500" />
-                            ) : (
-                              <ChevronDown className="w-4 h-4 text-zinc-500" />
-                            )}
+                            {expandedTopics.has(topic.name) ? <ChevronUp className="h-4 w-4" aria-hidden="true" /> : <ChevronDown className="h-4 w-4" aria-hidden="true" />}
                           </button>
-                          <div className="w-8 h-8 bg-zinc-950 border border-zinc-800 flex items-center justify-center mr-3 group-hover:border-emerald-500/50 transition-colors">
-                            <Database className="w-4 h-4 text-emerald-500/70" />
-                          </div>
-                          <div>
-                            <div className="text-sm font-bold font-mono text-zinc-100 tracking-tight">{topic.name}</div>
-                            <div className="text-[10px] font-mono text-zinc-600 mt-0.5 uppercase tracking-widest">TOPIC_OBJ</div>
-                          </div>
+                          <span className="max-w-[240px] truncate font-mono text-[13px] font-medium text-ink" title={topic.name}>{topic.name}</span>
                         </div>
                       </td>
-                      <td className="px-5 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                          <span className="dev-badge">
-                            {topic.partitions}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-5 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                          <span className="dev-badge">
-                            {topic.replicationFactor}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-5 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                          <span className="text-sm font-bold text-zinc-300 font-mono">
-                            {typeof topic.messageCount === 'number' ? nf.format(topic.messageCount) : '—'}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-5 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                          <div className="flex items-center space-x-1.5">
-                            <div className={`w-2 h-2 shadow-[0_0_8px_rgba(16,185,129,0.5)] ${
-                              (topic.connectedConsumers || 0) > 0 ? 'bg-emerald-500' : 'bg-zinc-700 shadow-none'
-                            }`}></div>
-                            <span className="text-sm font-bold font-mono text-zinc-300">
-                              {topic.connectedConsumers || 0}
-                            </span>
-                          </div>
+                      <td className="px-3 py-1.5 font-mono text-[13px] tabular-nums text-ink">{topic.partitions}</td>
+                      <td className="px-3 py-1.5 font-mono text-[13px] tabular-nums text-ink">{topic.replicationFactor}</td>
+                      <td className="px-3 py-1.5 font-mono text-[13px] tabular-nums text-ink">{typeof topic.messageCount === 'number' ? nf.format(topic.messageCount) : '—'}</td>
+                      <td className="whitespace-nowrap px-3 py-1.5">
+                        <div className="flex items-center gap-2">
+                          <span className={`h-1.5 w-1.5 rounded-full ${(topic.connectedConsumers || 0) > 0 ? 'bg-success' : 'bg-line'}`} aria-hidden="true" />
+                          <span className="font-mono text-[13px] tabular-nums text-ink">{topic.connectedConsumers || 0}</span>
                           {topic.consumerGroups && topic.consumerGroups.length > 0 && (
-                            <div className="ml-2" title={`Consumer Groups: ${topic.consumerGroups.join(', ')}`}>
-                              <span className="dev-badge text-cyan-500 border-cyan-900 bg-cyan-950/30">
-                                {topic.consumerGroups.length}
-                              </span>
-                            </div>
+                            <span className="dev-badge ml-1 whitespace-nowrap" title={`Consumer groups: ${topic.consumerGroups.join(', ')}`}>{topic.consumerGroups.length} {topic.consumerGroups.length === 1 ? 'group' : 'groups'}</span>
                           )}
-                        </div>
-                      </td>
-                      <td className="px-5 py-4 whitespace-nowrap text-right">
-                        <div className="flex items-center justify-end space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button
-                            onClick={() => openConfigEditor(topic.name)}
-                            className="p-1.5 text-zinc-500 hover:text-emerald-400 hover:bg-zinc-900 rounded-none transition-colors"
-                            title="Edit Configuration"
-                          >
-                            <Edit3 className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => {
-                              const newCount = prompt(`Enter new partition count for ${topic.name} (can only increase):`);
-                              if (newCount && parseInt(newCount) > 0) {
-                                addPartitions(topic.name, parseInt(newCount));
-                              }
-                            }}
-                            className="p-1.5 text-zinc-500 hover:text-cyan-400 hover:bg-zinc-900 rounded-none transition-colors"
-                            title="Add Partitions"
-                          >
-                            <BarChart3 className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => handleCleanupMessages(topic.name, topic.messageCount)}
-                            className="p-1.5 text-zinc-500 hover:text-amber-500 hover:bg-zinc-900 rounded-none transition-colors"
-                            title="Cleanup Messages"
-                            disabled={!topic.messageCount || topic.messageCount === 0}
-                          >
-                            <Eraser className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteTopic(topic.name)}
-                            className="p-1.5 text-zinc-500 hover:text-red-500 hover:bg-zinc-900 rounded-none transition-colors"
-                            title="Delete Topic"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
                         </div>
                       </td>
                     </tr>
                     {expandedTopics.has(topic.name) && (
-                      <tr>
-                        <td colSpan={6} className="px-5 py-4 bg-zinc-950 border-y border-zinc-900">
-                          <div className="pt-2">
-                            <h4 className="text-[10px] font-mono font-bold text-zinc-600 uppercase tracking-widest mb-3">CONFIGURATION_SETTINGS</h4>
-                            {!topicConfigs[topic.name] ? (
-                              <div className="text-xs font-mono text-zinc-500 italic">LOADING...</div>
-                            ) : (
-                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                                {Object.entries(topicConfigs[topic.name]).map(([key, value]) => (
-                                  <div key={key} className="p-3 bg-black border border-zinc-800 hover:border-zinc-700 transition-colors">
-                                    <div className="text-[10px] font-mono font-bold text-zinc-500 mb-1 flex items-center gap-1.5">
-                                      <span className="truncate">{key}</span>
-                                      <span
-                                        className="inline-flex items-center justify-center w-3 h-3 text-zinc-600 hover:text-emerald-500 cursor-help transition-colors"
-                                        title={getConfigTooltip(key)}
-                                        aria-label={`Info about ${key}`}
-                                      >
-                                        [?]
-                                      </span>
-                                    </div>
-                                    <div className="text-xs font-bold text-zinc-300 font-mono truncate">{value || 'default'}</div>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
+                      <tr id={`topic-config-details-${topic.name}`}>
+                        <td colSpan={5} className="border-y border-line bg-subtle px-3 py-3">
+                          <div role="group" className="mb-3 flex flex-wrap items-center gap-2" aria-label={`Actions for ${topic.name}`}>
+                            <button onClick={() => openConfigEditor(topic.name)} className="dev-btn inline-flex items-center gap-1.5" aria-label={`Edit configuration for ${topic.name}`}><Edit3 className="h-3.5 w-3.5" aria-hidden="true" /> Edit configuration</button>
+                            <button
+                              onClick={() => {
+                                const newCount = prompt(`Enter new partition count for ${topic.name} (can only increase):`);
+                                if (newCount !== null) addPartitions(topic.name, Number(newCount));
+                              }}
+                              className="dev-btn inline-flex items-center gap-1.5" aria-label={`Add partitions to ${topic.name}`}
+                            ><BarChart3 className="h-3.5 w-3.5" aria-hidden="true" /> Add partitions</button>
+                            <button onClick={() => handleCleanupMessages(topic.name)} className="dev-btn inline-flex items-center gap-1.5 hover:!border-warning hover:!text-warning disabled:cursor-not-allowed disabled:opacity-50" aria-label={`Purge messages from ${topic.name}`} disabled={cleaningAll || Boolean(cleaningTopic) || topic.messageCount === 0}><Eraser className="h-3.5 w-3.5" aria-hidden="true" /> {cleaningTopic === topic.name ? 'Purging...' : 'Purge messages'}</button>
+                            <button onClick={() => handleDeleteTopic(topic.name)} className="dev-btn inline-flex items-center gap-1.5 hover:!border-danger hover:!text-danger" aria-label={`Delete topic ${topic.name}`}><Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> Delete topic</button>
                           </div>
+                          <h3 className="mb-2 text-sm font-semibold text-ink">Topic configuration</h3>
+                          {configErrors[topic.name] ? <p className="text-sm text-danger" role="alert">{configErrors[topic.name]}</p> : !topicConfigs[topic.name] ? <p className="text-sm text-muted" role="status">Loading configuration...</p> : Object.keys(topicConfigs[topic.name]).length === 0 ? <p className="text-sm text-muted">No configuration properties are available.</p> : (
+                            <dl className="grid grid-cols-1 gap-x-6 gap-y-2 md:grid-cols-2 xl:grid-cols-3">
+                              {Object.entries(topicConfigs[topic.name]).map(([key, value]) => (
+                                <div key={key} className="min-w-0 border-b border-line py-1.5">
+                                  <dt className="mb-0.5 truncate font-mono text-xs text-muted" title={getConfigTooltip(key)}>{key}</dt>
+                                  <dd className="truncate font-mono text-xs font-medium text-ink" title={value || 'default'}>{value || 'default'}</dd>
+                                </div>
+                              ))}
+                            </dl>
+                          )}
                         </td>
                       </tr>
                     )}
                   </Fragment>
-                ))
-              )}
+                ))}
               </tbody>
             </table>
           </div>
+          <div className="border-t border-line px-3 py-2 text-xs text-muted" aria-live="polite">Showing {nf.format(filteredTopics.length)} of {nf.format(topics.length)} topics</div>
         </div>
       )}
 
-      {/* Configuration Editor Modal */}
+      {/* @group Components > ConfigurationEditor : Accessible topic settings dialog */}
       {showConfigEditor && selectedTopic && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div className="dev-card max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl border-emerald-900/30">
-            <div className="p-5 border-b border-zinc-800 bg-zinc-950">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-bold font-mono text-zinc-100 tracking-tight uppercase">
-                  EDIT_CONFIG: <span className="text-emerald-400 font-mono ml-2">{selectedTopic}</span>
-                </h3>
-                <button
-                  onClick={() => setShowConfigEditor(false)}
-                  className="p-1.5 text-zinc-500 hover:text-emerald-400 hover:bg-zinc-900 rounded-none transition-colors focus:outline-none"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/35 p-4">
+          <div ref={configDialogRef} role="dialog" aria-modal="true" aria-labelledby="config-editor-heading" tabIndex={-1} className="dev-card flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden outline-none">
+            <div className="flex items-start justify-between gap-3 border-b border-line px-4 py-3">
+              <div className="min-w-0">
+                <h2 id="config-editor-heading" className="text-lg font-semibold text-ink">Edit topic configuration</h2>
+                <p className="mt-1 break-all font-mono text-xs text-muted">{selectedTopic}</p>
               </div>
+              <button onClick={() => setShowConfigEditor(false)} aria-label="Close configuration editor" className="shrink-0 rounded-md p-1.5 text-muted transition-colors hover:bg-subtle hover:text-ink"><X className="h-5 w-5" aria-hidden="true" /></button>
             </div>
-            <div className="p-5 overflow-y-auto bg-black">
+            <div className="min-h-0 overflow-y-auto bg-surface p-4">
               {configEditorLoading ? (
-                <div className="flex flex-col items-center justify-center py-12 text-zinc-500">
-                  <RefreshCw className="w-8 h-8 animate-spin text-emerald-500 mb-4" />
-                  <span className="text-xs font-mono font-bold uppercase tracking-widest">LOADING_CONFIG...</span>
-                </div>
+                <div className="flex flex-col items-center justify-center py-12 text-muted" role="status"><RefreshCw className="mb-3 h-6 w-6 animate-spin text-accent" aria-hidden="true" /><span className="text-sm">Loading configuration...</span></div>
               ) : configEditorError ? (
-                <div className="p-4 mb-4 text-xs font-mono font-bold text-red-400 bg-red-950/30 border border-red-900 uppercase">
-                  ERR: {configEditorError}
-                </div>
+                <div className="rounded-md border border-danger/20 bg-danger/5 p-4 text-sm text-danger" role="alert">{configEditorError}</div>
               ) : Object.keys(editingConfig).length > 0 ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   {Object.entries(editingConfig).map(([key, value]) => (
-                    <div key={key} className="space-y-1.5">
-                      <label className="text-[10px] font-mono font-bold text-zinc-500 flex items-center gap-1.5 uppercase">
-                        <span>{key}</span>
-                        <span
-                          className="inline-flex items-center justify-center w-3 h-3 text-zinc-600 hover:text-emerald-500 cursor-help transition-colors"
-                          title={getConfigTooltip(key)}
-                          aria-label={`Info about ${key}`}
-                        >
-                          [?]
-                        </span>
-                      </label>
-                      <input
-                        type="text"
-                        value={value || ''}
-                        onChange={(e) => setEditingConfig({
-                          ...editingConfig,
-                          [key]: e.target.value,
-                        })}
-                        className="w-full dev-input"
-                      />
+                    <div key={key} className="space-y-2">
+                      <label htmlFor={`edit-topic-config-${key}`} className="block break-all font-mono text-xs font-medium text-ink" title={getConfigTooltip(key)}>{key}</label>
+                      <input id={`edit-topic-config-${key}`} type="text" value={value || ''} onChange={(e) => setEditingConfig({ ...editingConfig, [key]: e.target.value })} className="dev-input w-full font-mono" aria-describedby={`edit-topic-help-${key}`} />
+                      <p id={`edit-topic-help-${key}`} className="text-xs leading-5 text-muted">{getConfigTooltip(key)}</p>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="flex items-center justify-between p-4 text-xs font-mono font-bold text-zinc-500 bg-zinc-950 border border-zinc-800 uppercase tracking-widest">
-                  <span>NO_PROPERTIES_FOUND</span>
-                  <button
-                    onClick={() => selectedTopic && openConfigEditor(selectedTopic)}
-                    className="dev-btn py-1"
-                  >
-                    RETRY
-                  </button>
-                </div>
+                <div className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-line bg-subtle p-4 text-sm text-muted"><span>No configuration properties are available.</span><button onClick={() => selectedTopic && openConfigEditor(selectedTopic)} className="dev-btn">Retry</button></div>
               )}
             </div>
-            <div className="p-5 border-t border-zinc-800 bg-zinc-950 flex justify-end space-x-3">
-              <button
-                onClick={() => setShowConfigEditor(false)}
-                className="dev-btn"
-              >
-                CANCEL
-              </button>
-              <button
-                onClick={() => selectedTopic && updateTopicConfig(selectedTopic, editingConfig)}
-                disabled={savingConfig || configEditorLoading || Object.keys(editingConfig).length === 0}
-                className="dev-btn-primary disabled:opacity-50"
-              >
-                {savingConfig ? 'SAVING...' : 'SAVE_CONFIG'}
-              </button>
+            <div className="flex justify-end gap-2 border-t border-line bg-subtle px-4 py-3">
+              <button onClick={() => setShowConfigEditor(false)} className="dev-btn">Cancel</button>
+              <button onClick={() => selectedTopic && updateTopicConfig(selectedTopic, editingConfig)} disabled={savingConfig || configEditorLoading || Object.keys(editingConfig).length === 0} className="dev-btn-primary disabled:cursor-not-allowed disabled:opacity-50">{savingConfig ? 'Saving...' : 'Save changes'}</button>
             </div>
           </div>
         </div>

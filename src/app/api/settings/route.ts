@@ -1,194 +1,58 @@
+import { randomUUID } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
-import { 
-  KafkaSettings, 
-  DEFAULT_SETTINGS, 
-  validateSettings, 
-  MESSAGE_SIZE_PRESETS,
-  MultiServerConfig,
-  DEFAULT_MULTI_SERVER_CONFIG,
-  createServerProfile,
-  addOrUpdateProfile,
-  removeProfile,
-  getActiveProfile,
-  updateProfileLastConnected
-} from '@/lib/kafka-settings';
-import { getKafkaConnectionManager } from '@/lib/kafka';
+import { MESSAGE_SIZE_PRESETS, type MultiServerConfig } from '@/lib/kafka-settings';
+import { getKafkaConnectionManager, KafkaOperationError } from '@/lib/kafka';
+import { createInitialKafkaConfig, getStoredKafkaConfig, updateStoredKafkaConfig } from '@/services/kafka-config-store';
+import { ConfigValidationError, parseKafkaProfile, requireObject, requireProfileId } from '@/utils/kafka-config-validation';
 
-// In a real application, you might want to store this in a database
-// For now, we'll use in-memory storage (will reset on server restart)
-let currentSettings: KafkaSettings = { ...DEFAULT_SETTINGS };
-let multiServerConfig: MultiServerConfig = { ...DEFAULT_MULTI_SERVER_CONFIG };
+// @group APIEndpoints > Settings : Durable profile configuration shared by all server processes
+function configResponse(config: MultiServerConfig) {
+  const activeProfile = config.profiles.find(profile => profile.id === config.activeProfileId)!;
+  return NextResponse.json({ success: true, multiServerConfig: config, activeProfile, settings: activeProfile.settings, presets: { messageSizes: MESSAGE_SIZE_PRESETS } });
+}
+
+function settingsError(error: unknown) {
+  if (error instanceof SyntaxError) return NextResponse.json({ success: false, error: 'Request must contain valid JSON.' }, { status: 400 });
+  if (error instanceof ConfigValidationError) return NextResponse.json({ success: false, error: error.message }, { status: 400 });
+  if (error instanceof KafkaOperationError) return NextResponse.json({ success: false, error: error.message }, { status: error.status });
+  return NextResponse.json({ success: false, error: 'Unable to access cluster configuration. Check the configured storage location and permissions.' }, { status: 500 });
+}
 
 export async function GET() {
-  try {
-    const manager = getKafkaConnectionManager();
-    const activeProfile = getActiveProfile(multiServerConfig);
-    
-    return NextResponse.json({
-      success: true,
-      settings: currentSettings,
-      multiServerConfig: manager.getConfig(),
-      activeProfile,
-      presets: {
-        messageSizes: MESSAGE_SIZE_PRESETS
-      }
-    });
-  } catch (error) {
-    console.error('Error fetching settings:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to fetch settings' },
-      { status: 500 }
-    );
-  }
+  try { return configResponse(await getStoredKafkaConfig()); }
+  catch (error) { return settingsError(error); }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    
-    // Handle different types of updates
-    if (body.action === 'updateProfile') {
-      const { profile } = body;
-      if (!profile || !profile.id) {
-        return NextResponse.json(
-          { success: false, error: 'Profile data is required' },
-          { status: 400 }
-        );
+    const body = requireObject(await request.json());
+    const action = body.action;
+    if (typeof action !== 'string' || !['createProfile', 'updateProfile', 'deleteProfile', 'switchProfile'].includes(action)) throw new ConfigValidationError('Unknown settings action.');
+    const profile = action === 'createProfile'
+      ? parseKafkaProfile({ id: randomUUID(), name: body.name, settings: body.settings, description: body.description })
+      : action === 'updateProfile' ? parseKafkaProfile(body.profile) : null;
+    const profileId = profile?.id ?? requireProfileId(body.profileId);
+    const config = await updateStoredKafkaConfig(current => {
+      const existing = current.profiles.find(item => item.id === profileId);
+      if (action !== 'createProfile' && !existing) throw new KafkaOperationError('Cluster profile was not found.', 404);
+      if (action === 'createProfile') return { ...current, profiles: [...current.profiles, profile!] };
+      if (action === 'updateProfile') return { ...current, profiles: current.profiles.map(item => item.id === profileId ? profile! : item) };
+      if (action === 'deleteProfile') {
+        if (current.profiles.length === 1) throw new KafkaOperationError('The last cluster profile cannot be deleted.', 409);
+        const profiles = current.profiles.filter(item => item.id !== profileId);
+        return { profiles, activeProfileId: current.activeProfileId === profileId ? profiles[0].id : current.activeProfileId };
       }
-      
-      const manager = getKafkaConnectionManager();
-      const updatedConfig = addOrUpdateProfile(manager.getConfig(), profile);
-      manager.setConfig(updatedConfig);
-      multiServerConfig = updatedConfig;
-      
-      return NextResponse.json({
-        success: true,
-        message: 'Profile updated successfully',
-        multiServerConfig: updatedConfig
-      });
-    }
-    
-    if (body.action === 'createProfile') {
-      const { name, settings, description } = body;
-      if (!name || !settings) {
-        return NextResponse.json(
-          { success: false, error: 'Profile name and settings are required' },
-          { status: 400 }
-        );
-      }
-      
-      const newProfile = createServerProfile(name, settings, description);
-      const manager = getKafkaConnectionManager();
-      const updatedConfig = addOrUpdateProfile(manager.getConfig(), newProfile);
-      manager.setConfig(updatedConfig);
-      multiServerConfig = updatedConfig;
-      
-      return NextResponse.json({
-        success: true,
-        message: 'Profile created successfully',
-        profile: newProfile,
-        multiServerConfig: updatedConfig
-      });
-    }
-    
-    if (body.action === 'deleteProfile') {
-      const { profileId } = body;
-      if (!profileId) {
-        return NextResponse.json(
-          { success: false, error: 'Profile ID is required' },
-          { status: 400 }
-        );
-      }
-      
-      const manager = getKafkaConnectionManager();
-      try {
-        const updatedConfig = removeProfile(manager.getConfig(), profileId);
-        await manager.disconnectProfile(profileId);
-        manager.setConfig(updatedConfig);
-        multiServerConfig = updatedConfig;
-        
-        return NextResponse.json({
-          success: true,
-          message: 'Profile deleted successfully',
-          multiServerConfig: updatedConfig
-        });
-      } catch (error) {
-        return NextResponse.json(
-          { success: false, error: error instanceof Error ? error.message : 'Failed to delete profile' },
-          { status: 400 }
-        );
-      }
-    }
-    
-    if (body.action === 'switchProfile') {
-      const { profileId } = body;
-      if (!profileId) {
-        return NextResponse.json(
-          { success: false, error: 'Profile ID is required' },
-          { status: 400 }
-        );
-      }
-      
-      const manager = getKafkaConnectionManager();
-      try {
-        manager.switchActiveProfile(profileId);
-        const updatedConfig = updateProfileLastConnected(manager.getConfig(), profileId);
-        manager.setConfig(updatedConfig);
-        multiServerConfig = updatedConfig;
-        
-        return NextResponse.json({
-          success: true,
-          message: 'Profile switched successfully',
-          multiServerConfig: updatedConfig,
-          activeProfile: getActiveProfile(updatedConfig)
-        });
-      } catch (error) {
-        return NextResponse.json(
-          { success: false, error: error instanceof Error ? error.message : 'Failed to switch profile' },
-          { status: 400 }
-        );
-      }
-    }
-    
-    // Legacy settings update
-    const newSettings: Partial<KafkaSettings> = body;
-    const validatedSettings = validateSettings(newSettings);
-    currentSettings = { ...currentSettings, ...validatedSettings };
-    
-    return NextResponse.json({
-      success: true,
-      message: 'Settings updated successfully',
-      settings: currentSettings
+      return { ...current, activeProfileId: profileId };
     });
-  } catch (error) {
-    console.error('Error updating settings:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to update settings' },
-      { status: 500 }
-    );
-  }
+    await getKafkaConnectionManager().refreshConfig();
+    return configResponse(config);
+  } catch (error) { return settingsError(error); }
 }
 
 export async function PUT() {
   try {
-    // Reset to default multi-server configuration
-    const manager = getKafkaConnectionManager();
-    await manager.disconnectAll();
-    manager.setConfig(DEFAULT_MULTI_SERVER_CONFIG);
-    multiServerConfig = { ...DEFAULT_MULTI_SERVER_CONFIG };
-    currentSettings = { ...DEFAULT_SETTINGS };
-    
-    return NextResponse.json({
-      success: true,
-      message: 'Settings reset to defaults',
-      settings: currentSettings,
-      multiServerConfig
-    });
-  } catch (error) {
-    console.error('Error resetting settings:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to reset settings' },
-      { status: 500 }
-    );
-  }
+    const config = await updateStoredKafkaConfig(() => createInitialKafkaConfig());
+    await getKafkaConnectionManager().refreshConfig();
+    return configResponse(config);
+  } catch (error) { return settingsError(error); }
 }

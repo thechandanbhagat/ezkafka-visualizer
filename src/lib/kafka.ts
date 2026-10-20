@@ -1,6 +1,10 @@
-import { Kafka, Producer, Consumer, Admin } from 'kafkajs';
-import { KafkaServerProfile, MultiServerConfig, DEFAULT_MULTI_SERVER_CONFIG } from './kafka-settings';
+import { AssignerProtocol, ConfigResourceTypes, ConfigSource, Kafka } from 'kafkajs';
+import type { Admin, ConfigEntries, Producer } from 'kafkajs';
+import type { MultiServerConfig } from './kafka-settings';
+import { getStoredKafkaConfig } from '@/services/kafka-config-store';
+import { KafkaConsumerSessions } from '@/services/kafka-consumer-sessions';
 
+// @group Types : Kafka connections, topic summaries, and inspection records
 export interface KafkaConfig {
   brokers: string[];
   clientId: string;
@@ -30,12 +34,7 @@ export interface ConsumerGroupInfo {
   state: string;
   protocol: string;
   subscriptions: string[];
-}
-
-export interface TopicConsumerInfo {
-  topic: string;
-  totalConsumers: number;
-  consumerGroups: ConsumerGroupInfo[];
+  topicMemberCounts: Record<string, number>;
 }
 
 export interface MessageInfo {
@@ -48,530 +47,417 @@ export interface MessageInfo {
   headers?: Record<string, string>;
 }
 
-export class KafkaService {
-  private kafka: Kafka;
-  private admin: Admin;
-  private producer?: Producer;
-  private consumers: Map<string, Consumer> = new Map();
-  private consumerBuffers: Map<string, MessageInfo[]> = new Map();
-  private consumerLastAccessed: Map<string, number> = new Map();
-  private cleanupInterval?: NodeJS.Timeout;
-  private config: KafkaConfig;
-
-  private startCleanupInterval() {
-    if (this.cleanupInterval) return;
-    this.cleanupInterval = setInterval(() => {
-      const now = Date.now();
-      for (const [groupId, lastAccessed] of this.consumerLastAccessed.entries()) {
-        if (now - lastAccessed > 15000) {
-          const consumer = this.consumers.get(groupId);
-          if (consumer) {
-            consumer.stop().then(() => consumer.disconnect()).catch(console.error);
-            this.consumers.delete(groupId);
-          }
-          this.consumerBuffers.delete(groupId);
-          this.consumerLastAccessed.delete(groupId);
-          console.log(`Cleaned up idle consumer group: ${groupId}`);
-        }
-      }
-    }, 5000);
+// @group ErrorHandling : Safe API errors without leaking connection details
+export class KafkaOperationError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'KafkaOperationError';
   }
+}
 
-  constructor(config: KafkaConfig) {
-    this.config = config;
-    this.kafka = new Kafka({
+export function getKafkaErrorResponse(error: unknown, fallback: string): { error: string; status: number } {
+  if (error instanceof KafkaOperationError) return { error: error.message, status: error.status };
+  if (error instanceof SyntaxError) return { error: 'Request body must be valid JSON', status: 400 };
+  const type = error && typeof error === 'object' && 'type' in error ? error.type : undefined;
+  if (type === 'UNKNOWN_TOPIC_OR_PARTITION') return { error: 'Topic or partition was not found', status: 404 };
+  if (type === 'TOPIC_ALREADY_EXISTS') return { error: 'Topic already exists', status: 409 };
+  if (typeof type === 'string' && ['INVALID_PARTITIONS', 'INVALID_REPLICATION_FACTOR', 'INVALID_CONFIG', 'INVALID_TOPIC_EXCEPTION', 'POLICY_VIOLATION'].includes(type)) {
+    return { error: 'Kafka rejected the requested topic settings', status: 400 };
+  }
+  if (typeof type === 'string' && type.endsWith('_AUTHORIZATION_FAILED')) {
+    return { error: 'Kafka denied permission for this operation', status: 403 };
+  }
+  return { error: fallback, status: 502 };
+}
+
+// @group Validation : Validate topic API input before contacting a cluster
+export function validateTopicName(name: unknown): asserts name is string {
+  if (typeof name !== 'string' || name.length > 249 || !/^[A-Za-z0-9._-]+$/.test(name) || name === '.' || name === '..') {
+    throw new KafkaOperationError('Topic name must contain 1–249 letters, digits, dots, underscores, or hyphens', 400);
+  }
+}
+
+export function validatePartitionCount(count: unknown): asserts count is number {
+  if (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count > 10000) {
+    throw new KafkaOperationError('Partition count must be an integer between 1 and 10000', 400);
+  }
+}
+
+export function validateTopicConfigs(configs: unknown): asserts configs is Record<string, string> {
+  if (!configs || typeof configs !== 'object' || Array.isArray(configs) || Object.keys(configs).length > 100) {
+    throw new KafkaOperationError('Topic configuration must be an object with at most 100 properties', 400);
+  }
+  for (const [name, value] of Object.entries(configs)) {
+    if (!/^[a-z][a-z0-9.]{0,199}$/.test(name) || typeof value !== 'string' || value.length > 4096 || value.includes('\0')) {
+      throw new KafkaOperationError('Topic configuration requires valid property names and string values of at most 4096 characters', 400);
+    }
+  }
+}
+
+export function validateRequestBody(body: unknown): asserts body is Record<string, unknown> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new KafkaOperationError('Request body must be a JSON object', 400);
+  }
+}
+
+export function validateProfileId(profileId: unknown): asserts profileId is string | undefined {
+  if (profileId !== undefined && (typeof profileId !== 'string' || profileId.length < 1 || profileId.length > 200)) {
+    throw new KafkaOperationError('Invalid Kafka profile ID', 400);
+  }
+}
+
+export function validateSelectedProfileId(profileId: unknown): asserts profileId is string {
+  validateProfileId(profileId);
+  if (profileId === undefined) throw new KafkaOperationError('Select a Kafka profile explicitly for this operation', 400);
+}
+
+function offsetSpan(offsets: Array<{ high: string; low: string }>): bigint {
+  return offsets.reduce((total, { high, low }) => {
+    if (!/^\d+$/.test(high) || !/^\d+$/.test(low) || BigInt(high) < BigInt(low)) {
+      throw new KafkaOperationError('Kafka returned invalid partition offsets', 502);
+    }
+    return total + BigInt(high) - BigInt(low);
+  }, BigInt(0));
+}
+
+// @group DatabaseOperations > Lifecycle : Share clients while rejecting retired profile connections
+export class KafkaService {
+  private readonly kafka: Kafka;
+  private readonly admin: Admin;
+  private readonly consumerSessions: KafkaConsumerSessions;
+  private producer?: Producer;
+  private connecting?: Promise<void>;
+  private producerConnecting?: Promise<Producer>;
+  private readonly topicConfigWrites = new Map<string, Promise<void>>();
+  private retired = false;
+
+  constructor(private readonly config: KafkaConfig, kafka?: Kafka) {
+    this.kafka = kafka ?? new Kafka({
       clientId: config.clientId,
       brokers: config.brokers,
-      retry: {
-        initialRetryTime: config.initialRetryTime || 300,
-        retries: config.retries || 3
-      },
-      connectionTimeout: config.connectionTimeout || 10000,
-      requestTimeout: config.requestTimeout || 30000,
+      retry: { initialRetryTime: config.initialRetryTime ?? 300, retries: config.retries ?? 3 },
+      connectionTimeout: config.connectionTimeout ?? 10000,
+      requestTimeout: config.requestTimeout ?? 30000,
     });
     this.admin = this.kafka.admin();
+    this.consumerSessions = new KafkaConsumerSessions(this.kafka);
+  }
+
+  private assertCurrent(): void {
+    if (this.retired) throw new KafkaOperationError('Kafka profile changed. Refresh and retry the operation.', 409);
   }
 
   async connect(): Promise<void> {
-    try {
-      await this.admin.connect();
-      console.log('Connected to Kafka cluster');
-    } catch (error) {
-      console.error('Failed to connect to Kafka:', error);
-      throw error;
+    this.assertCurrent();
+    if (!this.connecting) {
+      this.connecting = this.admin.connect().catch(error => {
+        this.connecting = undefined;
+        throw error;
+      });
     }
+    await this.connecting;
+    this.assertCurrent();
   }
 
   async disconnect(): Promise<void> {
-    try {
-      await this.admin.disconnect();
-      if (this.producer) {
-        await this.producer.disconnect();
-      }
-      for (const consumer of this.consumers.values()) {
-        await consumer.disconnect();
-      }
-      this.consumers.clear();
-      console.log('Disconnected from Kafka cluster');
-    } catch (error) {
-      console.error('Error disconnecting from Kafka:', error);
+    await Promise.allSettled([this.connecting, this.producerConnecting]);
+    const results = await Promise.allSettled([
+      this.admin.disconnect(),
+      this.producer?.disconnect(),
+      this.consumerSessions.disconnect(),
+    ]);
+    this.connecting = undefined;
+    this.producerConnecting = undefined;
+    this.producer = undefined;
+    if (results.some(result => result.status === 'rejected')) {
+      throw new KafkaOperationError('Could not close all Kafka connections', 502);
     }
   }
 
-  async getTopics(): Promise<TopicInfo[]> {
-    try {
-      const topics = await this.admin.listTopics();
-      const metadata = await this.admin.fetchTopicMetadata({ topics });
-      
-      return metadata.topics.map(topic => ({
-        name: topic.name,
-        partitions: topic.partitions.length,
-        replicationFactor: topic.partitions[0]?.replicas.length || 0,
-      }));
-    } catch (error) {
-      console.error('Error fetching topics:', error);
-      throw error;
-    }
+  async retire(): Promise<void> {
+    this.retired = true;
+    await this.disconnect();
   }
 
-  async createTopic(name: string, partitions: number = 1, replicationFactor: number = 1): Promise<void> {
-    try {
-      await this.admin.createTopics({
-        topics: [{
-          topic: name,
-          numPartitions: partitions,
-          replicationFactor,
-        }],
-      });
-      console.log(`Topic ${name} created successfully`);
-    } catch (error) {
-      console.error(`Error creating topic ${name}:`, error);
-      throw error;
+  // @group DatabaseOperations > Topics : Actual topic administration on the selected cluster
+  async createTopic(name: string, partitions = 1, replicationFactor = 1, configs: Record<string, string> = {}): Promise<void> {
+    this.assertCurrent();
+    validateTopicName(name);
+    validatePartitionCount(partitions);
+    if (!Number.isInteger(replicationFactor) || replicationFactor < 1 || replicationFactor > 32767) {
+      throw new KafkaOperationError('Replication factor must be an integer between 1 and 32767', 400);
     }
+    validateTopicConfigs(configs);
+    const created = await this.admin.createTopics({
+      waitForLeaders: true,
+      topics: [{ topic: name, numPartitions: partitions, replicationFactor, configEntries: Object.entries(configs).map(([name, value]) => ({ name, value })) }],
+    });
+    if (!created) throw new KafkaOperationError('Topic already exists', 409);
   }
 
   async deleteTopic(name: string): Promise<void> {
-    try {
-      await this.admin.deleteTopics({
-        topics: [name],
-      });
-      console.log(`Topic ${name} deleted successfully`);
-    } catch (error) {
-      console.error(`Error deleting topic ${name}:`, error);
-      throw error;
-    }
+    this.assertCurrent();
+    validateTopicName(name);
+    await this.admin.deleteTopics({ topics: [name] });
   }
 
   async cleanupMessages(topicName: string): Promise<{ deletedPartitions: number; totalMessages: number }> {
+    this.assertCurrent();
+    validateTopicName(topicName);
+    const offsets = await this.admin.fetchTopicOffsets(topicName);
+    const span = offsetSpan(offsets);
+    // Captured decimal strings preserve 64-bit offsets and exclude records arriving after this snapshot.
+    const partitions = offsets.map(({ partition, high }) => ({ partition, offset: high }));
+    if (partitions.length === 0) throw new KafkaOperationError('Topic has no available partitions', 404);
+    this.assertCurrent();
     try {
-      // First, get the topic metadata to preserve its configuration
-      const metadata = await this.admin.fetchTopicMetadata({ topics: [topicName] });
-      const topic = metadata.topics.find(t => t.name === topicName);
-      
-      if (!topic) {
-        throw new Error(`Topic ${topicName} not found`);
-      }
+      await this.admin.deleteTopicRecords({ topic: topicName, partitions });
+    } catch {
+      throw new KafkaOperationError('Kafka could not complete the purge. Some partitions may already be purged; refresh the topic before retrying.', 502);
+    }
+    return { deletedPartitions: partitions.length, totalMessages: Number(span) };
+  }
 
-      // Get the current offsets for all partitions to calculate message count
-      type PartitionOffset = { partition: number; offset?: string; high?: string; low?: string };
-      const offsets: PartitionOffset[] = await this.admin.fetchTopicOffsets(topicName) as unknown as PartitionOffset[];
-      
-      // Calculate total messages before deletion
-      let totalMessages = 0;
-      offsets.forEach((p: PartitionOffset) => {
-        const high = parseInt((p.high ?? p.offset ?? '0') as string, 10);
-        const low = parseInt((p.low ?? '0') as string, 10);
-        const delta = high - low;
-        totalMessages += isNaN(delta) ? 0 : Math.max(0, delta);
-      });
+  private async describeTopicConfigs(name: string): Promise<ConfigEntries[]> {
+    this.assertCurrent();
+    validateTopicName(name);
+    const result = await this.admin.describeConfigs({ resources: [{ type: ConfigResourceTypes.TOPIC, name }], includeSynonyms: false });
+    const resource = result.resources.find(resource => resource.resourceType === ConfigResourceTypes.TOPIC && resource.resourceName === name);
+    if (!resource) throw new KafkaOperationError('Kafka did not return topic configuration', 502);
+    if (resource.errorCode !== 0) {
+      throw new KafkaOperationError('Kafka could not read topic configuration', resource.errorCode === 3 ? 404 : resource.errorCode === 29 ? 403 : 502);
+    }
+    return resource.configEntries;
+  }
 
-      // Store topic configuration
-      const partitionCount = topic.partitions.length;
-      const replicationFactor = topic.partitions[0]?.replicas.length || 1;
+  async getTopicConfigs(name: string): Promise<Record<string, string>> {
+    const entries = await this.describeTopicConfigs(name);
+    return Object.fromEntries(entries.filter(entry => !entry.isSensitive && typeof entry.configValue === 'string').map(entry => [entry.configName, entry.configValue]));
+  }
 
-      // For large datasets, topic recreation is more reliable than deleteTopicRecords
-      // Delete the topic
-      await this.admin.deleteTopics({
-        topics: [topicName],
-        timeout: 30000,
-      });
-
-      // Wait a bit for deletion to complete
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // Recreate the topic with the same configuration
-      await this.admin.createTopics({
-        topics: [{
-          topic: topicName,
-          numPartitions: partitionCount,
-          replicationFactor: replicationFactor,
-        }],
-        timeout: 30000,
-      });
-
-      console.log(`Cleaned up messages from topic ${topicName}: ${partitionCount} partitions, ~${totalMessages} messages`);
-      
-      return {
-        deletedPartitions: partitionCount,
-        totalMessages
-      };
-    } catch (error) {
-      console.error(`Error cleaning up messages from topic ${topicName}:`, error);
-      throw error;
+  async updateTopicConfigs(name: string, configs: Record<string, string>): Promise<void> {
+    validateTopicName(name);
+    validateTopicConfigs(configs);
+    const previous = this.topicConfigWrites.get(name) ?? Promise.resolve();
+    const write = previous.catch(() => undefined).then(() => this.applyTopicConfigs(name, configs));
+    this.topicConfigWrites.set(name, write);
+    try {
+      await write;
+    } finally {
+      if (this.topicConfigWrites.get(name) === write) this.topicConfigWrites.delete(name);
     }
   }
 
-  async getProducer(): Promise<Producer> {
-    if (!this.producer) {
-      this.producer = this.kafka.producer({
-        // Note: maxMessageBytes is set at the broker level, not producer level
-        // Most producer-specific configurations are set per send request
-      });
-      await this.producer.connect();
+  private async applyTopicConfigs(name: string, configs: Record<string, string>): Promise<void> {
+    const entries = await this.describeTopicConfigs(name);
+    const existing = new Map(entries.map(entry => [entry.configName, entry]));
+    for (const key of Object.keys(configs)) {
+      const entry = existing.get(key);
+      if (!entry || entry.readOnly || entry.isSensitive) {
+        throw new KafkaOperationError(`Topic setting cannot be edited: ${key}`, 400);
+      }
     }
-    return this.producer;
+    if (Object.keys(configs).length === 0) return;
+    // Kafka's alterConfigs replaces overrides; preserve every override outside this patch.
+    const overrides = new Map<string, string>();
+    for (const entry of entries) {
+      if (entry.configSource === ConfigSource.TOPIC_CONFIG) {
+        if (entry.isSensitive || entry.readOnly || typeof entry.configValue !== 'string') {
+          throw new KafkaOperationError('Kafka returned a topic override that cannot be preserved safely', 409);
+        }
+        overrides.set(entry.configName, entry.configValue);
+      }
+    }
+    for (const [key, value] of Object.entries(configs)) overrides.set(key, value);
+    this.assertCurrent();
+    await this.admin.alterConfigs({
+      validateOnly: false,
+      resources: [{ type: ConfigResourceTypes.TOPIC, name, configEntries: Array.from(overrides, ([name, value]) => ({ name, value })) }],
+    });
+  }
+
+  async addPartitions(name: string, count: number): Promise<void> {
+    this.assertCurrent();
+    validateTopicName(name);
+    validatePartitionCount(count);
+    const metadata = await this.admin.fetchTopicMetadata({ topics: [name] });
+    const topic = metadata.topics.find(topic => topic.name === name);
+    if (!topic) throw new KafkaOperationError('Topic was not found', 404);
+    if (count <= topic.partitions.length) throw new KafkaOperationError('Partition count must exceed the current partition count', 400);
+    this.assertCurrent();
+    await this.admin.createPartitions({ topicPartitions: [{ topic: name, count }] });
+  }
+
+  // @group BusinessLogic > Messages : Produce records and delegate isolated inspection sessions
+  private async getProducer(): Promise<Producer> {
+    this.assertCurrent();
+    if (!this.producerConnecting) {
+      this.producer = this.kafka.producer({ allowAutoTopicCreation: false });
+      const producer = this.producer;
+      this.producerConnecting = producer.connect().then(() => producer).catch(async error => {
+        this.producerConnecting = undefined;
+        this.producer = undefined;
+        await producer.disconnect().catch(() => undefined);
+        throw error;
+      });
+    }
+    return this.producerConnecting;
   }
 
   async sendMessage(topic: string, message: { key?: string; value: string; headers?: Record<string, string> }): Promise<void> {
-    try {
-      const producer = await this.getProducer();
-      
-      // Map compression types to KafkaJS enum values
-      const compressionMap: Record<string, number | undefined> = {
-        'none': undefined,
-        'gzip': 1,
-        'snappy': 2,
-        'lz4': 3,
-        'zstd': 4
-      };
-      
-      await producer.send({
-        topic,
-        messages: [message],
-        acks: this.config.acks || 1,
-        compression: compressionMap[this.config.compressionType || 'none'],
-        timeout: this.config.requestTimeout || 30000,
-      });
-      console.log(`Message sent to topic ${topic}`);
-    } catch (error) {
-      console.error(`Error sending message to topic ${topic}:`, error);
-      throw error;
+    validateTopicName(topic);
+    const messageBytes = Buffer.byteLength(message.value) + Buffer.byteLength(message.key ?? '') +
+      Object.entries(message.headers ?? {}).reduce((size, [key, value]) => size + Buffer.byteLength(key) + Buffer.byteLength(value), 0);
+    if (messageBytes > (this.config.maxMessageSize ?? 1048576)) {
+      throw new KafkaOperationError('Message exceeds the selected profile’s maximum message size', 413);
     }
+    const compressionType = this.config.compressionType ?? 'none';
+    if (compressionType !== 'none' && compressionType !== 'gzip') {
+      throw new KafkaOperationError('Only none or gzip message compression is supported', 400);
+    }
+    const producer = await this.getProducer();
+    this.assertCurrent();
+    await producer.send({ topic, messages: [message], acks: this.config.acks ?? 1, compression: compressionType === 'gzip' ? 1 : undefined, timeout: this.config.requestTimeout ?? 30000 });
   }
 
-  async createConsumer(groupId: string, topics: string[]): Promise<Consumer> {
-    try {
-      const consumer = this.kafka.consumer({ groupId });
-      await consumer.connect();
-      await consumer.subscribe({ topics, fromBeginning: false });
-      
-      this.consumers.set(groupId, consumer);
-      return consumer;
-    } catch (error) {
-      console.error(`Error creating consumer for group ${groupId}:`, error);
-      throw error;
-    }
+  async pollConsumerSession(request: Parameters<KafkaConsumerSessions['poll']>[0]) {
+    this.assertCurrent();
+    return this.consumerSessions.poll(request);
   }
 
-  async consumeMessages(topics: string[], groupId: string = 'ezkafka-consumer-group', maxMessages: number = 10, timeoutMs: number = 5000, fromBeginning: boolean = false): Promise<MessageInfo[]> {
-    this.consumerLastAccessed.set(groupId, Date.now());
-    this.startCleanupInterval();
-
-    if (!this.consumers.has(groupId)) {
-      try {
-        const consumer = this.kafka.consumer({ groupId });
-        await consumer.connect();
-        await consumer.subscribe({ topics, fromBeginning });
-        
-        this.consumerBuffers.set(groupId, []);
-        this.consumers.set(groupId, consumer);
-
-        consumer.run({
-          eachMessage: async ({ topic, partition, message, heartbeat }) => {
-            try {
-              await heartbeat();
-              const messageInfo: MessageInfo = {
-                topic,
-                partition,
-                offset: message.offset,
-                timestamp: message.timestamp ? new Date(parseInt(message.timestamp)).toISOString() : new Date().toISOString(),
-                key: message.key ? message.key.toString() : undefined,
-                value: message.value ? message.value.toString() : '',
-                headers: message.headers ? Object.fromEntries(
-                  Object.entries(message.headers).map(([key, value]) => [
-                    key,
-                    value ? value.toString() : ''
-                  ])
-                ) : undefined
-              };
-              
-              const buffer = this.consumerBuffers.get(groupId) || [];
-              buffer.push(messageInfo);
-              if (buffer.length > 500) {
-                buffer.shift();
-              }
-            } catch (error) {
-              console.error('Error processing message:', error);
-            }
-          },
-        }).catch(console.error);
-
-        // Wait a bit for initial fetch
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      } catch (error) {
-        console.error(`Error starting consumer for group ${groupId}:`, error);
-        throw error;
-      }
-    } else {
-      // If consumer already exists, wait up to timeoutMs if buffer is empty
-      let waited = 0;
-      while (waited < timeoutMs) {
-        const buffer = this.consumerBuffers.get(groupId) || [];
-        if (buffer.length > 0) break;
-        await new Promise(resolve => setTimeout(resolve, 500));
-        waited += 500;
-      }
-    }
-
-    const buffer = this.consumerBuffers.get(groupId) || [];
-    const messagesToReturn = [...buffer].slice(-maxMessages);
-    this.consumerBuffers.set(groupId, []); // clear buffer after returning
-    return messagesToReturn;
+  async stopConsumerSession(sessionId: string): Promise<void> {
+    await this.consumerSessions.stop(sessionId);
   }
 
+
+  // @group DatabaseOperations > Metadata : Decode member assignments and count members for each topic
   async getClusterInfo(): Promise<{ topics: number; metadata: unknown }> {
-    try {
-      const metadata = await this.admin.fetchTopicMetadata();
-      return {
-        topics: metadata.topics.length,
-        metadata: metadata.topics,
-      };
-    } catch (error) {
-      console.error('Error fetching cluster info:', error);
-      throw error;
-    }
+    this.assertCurrent();
+    const metadata = await this.admin.fetchTopicMetadata();
+    return { topics: metadata.topics.length, metadata: metadata.topics };
   }
 
   async getConsumerGroups(): Promise<ConsumerGroupInfo[]> {
-    try {
-      const groups = await this.admin.listGroups();
-      const groupDetails = await Promise.all(
-        groups.groups.map(async (group) => {
-          try {
-            const description = await this.admin.describeGroups([group.groupId]);
-            const groupInfo = description.groups[0];
-            
-            return {
-              groupId: group.groupId,
-              members: groupInfo.members.length,
-              state: groupInfo.state,
-              protocol: groupInfo.protocol,
-              subscriptions: [...new Set(groupInfo.members.flatMap(member => 
-                member.memberAssignment ? Object.keys(member.memberAssignment) : []
-              ))]
-            };
-          } catch (error) {
-            console.error(`Error describing group ${group.groupId}:`, error);
-            return {
-              groupId: group.groupId,
-              members: 0,
-              state: 'unknown',
-              protocol: 'unknown',
-              subscriptions: []
-            };
+    this.assertCurrent();
+    const { groups } = await this.admin.listGroups();
+    if (!groups.length) return [];
+    const descriptions = await this.admin.describeGroups(groups.map(group => group.groupId));
+    return groups.map(group => {
+      const info = descriptions.groups.find(info => info.groupId === group.groupId);
+      if (!info) throw new KafkaOperationError('Kafka returned incomplete consumer group metadata', 502);
+      const topicMemberCounts: Record<string, number> = Object.create(null);
+      if (info.protocolType === 'consumer') {
+        for (const member of info.members) {
+          if (!member.memberAssignment.length) continue;
+          const decoded = AssignerProtocol.MemberAssignment.decode(member.memberAssignment);
+          if (!decoded) throw new KafkaOperationError('Kafka returned an unsupported consumer assignment', 502);
+          for (const [topic, partitions] of Object.entries(decoded.assignment)) {
+            if (partitions.length) topicMemberCounts[topic] = (topicMemberCounts[topic] ?? 0) + 1;
           }
-        })
-      );
-      
-      return groupDetails;
-    } catch (error) {
-      console.error('Error fetching consumer groups:', error);
-      return [];
-    }
-  }
-
-  async getTopicConsumerInfo(topicName: string): Promise<TopicConsumerInfo> {
-    try {
-      const consumerGroups = await this.getConsumerGroups();
-      const relevantGroups = consumerGroups.filter(group => 
-        group.subscriptions.includes(topicName)
-      );
-      
-      const totalConsumers = relevantGroups.reduce((sum, group) => sum + group.members, 0);
-      
-      return {
-        topic: topicName,
-        totalConsumers,
-        consumerGroups: relevantGroups
-      };
-    } catch (error) {
-      console.error(`Error getting consumer info for topic ${topicName}:`, error);
-      return {
-        topic: topicName,
-        totalConsumers: 0,
-        consumerGroups: []
-      };
-    }
+        }
+      }
+      return { groupId: info.groupId, members: info.members.length, state: info.state, protocol: info.protocol, subscriptions: Object.keys(topicMemberCounts), topicMemberCounts };
+    });
   }
 
   async getTopicsWithConsumerInfo(): Promise<TopicInfo[]> {
-    try {
-      const topics = await this.admin.listTopics();
-      const metadata = await this.admin.fetchTopicMetadata({ topics });
-      const consumerGroups = await this.getConsumerGroups();
-      
-      return await Promise.all(metadata.topics.map(async (topic) => {
-        const relevantGroups = consumerGroups.filter(group => 
-          group.subscriptions.includes(topic.name)
-        );
-        
-        const connectedConsumers = relevantGroups.reduce((sum, group) => sum + group.members, 0);
-        let messageCount: number | undefined = undefined;
-        try {
-          type PartitionOffset = { partition: number; offset?: string; high?: string; low?: string };
-          const offsets: PartitionOffset[] = await this.admin.fetchTopicOffsets(topic.name) as unknown as PartitionOffset[];
-          messageCount = offsets.reduce((sum, p: PartitionOffset) => {
-            const high = parseInt((p.high ?? p.offset ?? '0') as string, 10);
-            const low = parseInt((p.low ?? '0') as string, 10);
-            const delta = high - low;
-            return sum + (isNaN(delta) ? 0 : Math.max(0, delta));
-          }, 0);
-        } catch (err) {
-          console.warn(`Could not fetch offsets for topic ${topic.name}:`, err);
-        }
-        
-        return {
-          name: topic.name,
-          partitions: topic.partitions.length,
-          replicationFactor: topic.partitions[0]?.replicas.length || 0,
-          connectedConsumers,
-          consumerGroups: relevantGroups.map(g => g.groupId),
-          messageCount,
-        };
-      }));
-    } catch (error) {
-      console.error('Error fetching topics with consumer info:', error);
-      throw error;
-    }
+    this.assertCurrent();
+    const topics = await this.admin.listTopics();
+    const metadata = await this.admin.fetchTopicMetadata({ topics });
+    const groups = await this.getConsumerGroups();
+    return Promise.all(metadata.topics.map(async topic => {
+      const relevantGroups = groups.filter(group => (group.topicMemberCounts[topic.name] ?? 0) > 0);
+      let messageCount: number | undefined;
+      try {
+        const span = offsetSpan(await this.admin.fetchTopicOffsets(topic.name));
+        if (span <= BigInt(Number.MAX_SAFE_INTEGER)) messageCount = Number(span);
+      } catch {
+        // Offset visibility is permission dependent; leave the count explicitly unavailable.
+      }
+      return {
+        name: topic.name,
+        partitions: topic.partitions.length,
+        replicationFactor: topic.partitions[0]?.replicas.length ?? 0,
+        connectedConsumers: relevantGroups.reduce((total, group) => total + group.topicMemberCounts[topic.name], 0),
+        consumerGroups: relevantGroups.map(group => group.groupId),
+        messageCount,
+      };
+    }));
   }
 }
 
-// Multi-server Kafka connection manager
+// @group Configuration > Profiles : Serialize durable reads and retire all changed profile clients
 export class KafkaConnectionManager {
-  private static instance: KafkaConnectionManager | null = null;
-  private connections: Map<string, KafkaService> = new Map();
-  private config: MultiServerConfig;
+  private static instance: KafkaConnectionManager | undefined;
+  private readonly connections = new Map<string, { fingerprint: string; service: KafkaService }>();
+  private configurationQueue: Promise<unknown> = Promise.resolve();
 
-  private constructor() {
-    this.config = DEFAULT_MULTI_SERVER_CONFIG;
-  }
+  constructor(
+    private readonly readConfig: () => Promise<MultiServerConfig> = getStoredKafkaConfig,
+    private readonly createService: (config: KafkaConfig) => KafkaService = config => new KafkaService(config),
+  ) {}
 
   static getInstance(): KafkaConnectionManager {
-    if (!KafkaConnectionManager.instance) {
-      KafkaConnectionManager.instance = new KafkaConnectionManager();
+    return this.instance ??= new KafkaConnectionManager();
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.configurationQueue.then(operation, operation);
+    this.configurationQueue = result.catch(() => undefined);
+    return result;
+  }
+
+  private async applyConfig(config: MultiServerConfig): Promise<void> {
+    const retirements: Promise<void>[] = [];
+    for (const [id, connection] of this.connections) {
+      const profile = config.profiles.find(profile => profile.id === id);
+      if (!profile || JSON.stringify(profile.settings) !== connection.fingerprint) {
+        this.connections.delete(id);
+        retirements.push(connection.service.retire());
+      }
     }
-    return KafkaConnectionManager.instance;
-  }
-
-  setConfig(config: MultiServerConfig): void {
-    this.config = config;
-  }
-
-  getConfig(): MultiServerConfig {
-    return this.config;
-  }
-
-  getActiveProfile(): KafkaServerProfile | null {
-    return this.config.profiles.find(p => p.id === this.config.activeProfileId) || null;
-  }
-
-  getConnection(profileId?: string): KafkaService {
-    const targetProfileId = profileId || this.config.activeProfileId;
-    const profile = this.config.profiles.find(p => p.id === targetProfileId);
-    
-    if (!profile) {
-      throw new Error(`Kafka profile not found: ${targetProfileId}`);
+    const results = await Promise.allSettled(retirements);
+    if (results.some(result => result.status === 'rejected')) {
+      throw new KafkaOperationError('A changed Kafka connection could not be closed. Retry after checking the cluster.', 502);
     }
+  }
 
-    // Check if we already have a connection for this profile
-    let connection = this.connections.get(targetProfileId);
-    
-    if (!connection) {
-      // Create new connection
-      connection = new KafkaService(profile.settings);
-      this.connections.set(targetProfileId, connection);
-    }
+  async refreshConfig(): Promise<void> {
+    return this.enqueue(async () => this.applyConfig(await this.readConfig()));
+  }
 
-    return connection;
+  async getConnection(profileId?: string): Promise<KafkaService> {
+    validateProfileId(profileId);
+    return this.enqueue(async () => {
+      const config = await this.readConfig();
+      await this.applyConfig(config);
+      const id = profileId ?? config.activeProfileId;
+      const profile = config.profiles.find(profile => profile.id === id);
+      if (!profile) throw new KafkaOperationError('Kafka profile was not found', 404);
+      let connection = this.connections.get(id);
+      if (!connection) {
+        connection = { fingerprint: JSON.stringify(profile.settings), service: this.createService(structuredClone(profile.settings)) };
+        this.connections.set(id, connection);
+      }
+      return connection.service;
+    });
   }
 
   async disconnectAll(): Promise<void> {
-    const disconnectPromises = Array.from(this.connections.values()).map(
-      connection => connection.disconnect()
-    );
-    await Promise.allSettled(disconnectPromises);
-    this.connections.clear();
-  }
-
-  async disconnectProfile(profileId: string): Promise<void> {
-    const connection = this.connections.get(profileId);
-    if (connection) {
-      await connection.disconnect();
-      this.connections.delete(profileId);
-    }
-  }
-
-  getAllProfiles(): KafkaServerProfile[] {
-    return this.config.profiles;
-  }
-
-  switchActiveProfile(profileId: string): void {
-    const profile = this.config.profiles.find(p => p.id === profileId);
-    if (!profile) {
-      throw new Error(`Profile not found: ${profileId}`);
-    }
-    this.config.activeProfileId = profileId;
+    return this.enqueue(async () => {
+      const connections = Array.from(this.connections.values());
+      this.connections.clear();
+      const results = await Promise.allSettled(connections.map(connection => connection.service.retire()));
+      if (results.some(result => result.status === 'rejected')) throw new KafkaOperationError('Could not close all Kafka connections', 502);
+    });
   }
 }
 
-// Singleton instance for backward compatibility
-let kafkaService: KafkaService | null = null;
-
-// New multi-server functions
+// @group Exports : Shared server-only connection access
 export function getKafkaConnectionManager(): KafkaConnectionManager {
   return KafkaConnectionManager.getInstance();
 }
 
-export function getKafkaService(profileId?: string): KafkaService {
+export async function getKafkaService(profileId?: string): Promise<KafkaService> {
   return getKafkaConnectionManager().getConnection(profileId);
-}
-
-export function getActiveKafkaService(): KafkaService {
-  return getKafkaConnectionManager().getConnection();
-}
-
-// Legacy function for backward compatibility
-export function createKafkaServiceWithSettings(settings: KafkaConfig): KafkaService {
-  kafkaService = new KafkaService(settings);
-  return kafkaService;
-}
-
-export async function reinitializeKafkaService(): Promise<KafkaService> {
-  try {
-    // Fetch current multi-server config from API
-    const response = await fetch('/api/settings');
-    if (response.ok) {
-      const data = await response.json();
-      if (data.success && data.multiServerConfig) {
-        const manager = getKafkaConnectionManager();
-        manager.setConfig(data.multiServerConfig);
-        return manager.getConnection();
-      }
-    }
-  } catch (error) {
-    console.warn('Could not fetch multi-server config, using defaults:', error);
-  }
-  
-  // Fallback to default configuration
-  return getActiveKafkaService();
 }

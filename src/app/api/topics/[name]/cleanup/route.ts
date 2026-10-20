@@ -1,40 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getKafkaService } from '@/lib/kafka';
+import { getKafkaService, validateTopicName } from '@/lib/kafka';
+import { readTopicProfileId, topicApiError } from '../../topic-api';
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ name: string }> }
-) {
+// @group APIEndpoints > Purge : Delete records up to a captured offset without recreating the topic
+export async function POST(request: NextRequest, { params }: { params: Promise<{ name: string }> }) {
   try {
-    const { searchParams } = new URL(request.url);
-    const profileId = searchParams.get('profileId') || undefined;
-    const { name: topicName } = await params;
-
-    if (!topicName) {
-      return NextResponse.json(
-        { error: 'Topic name is required' },
-        { status: 400 }
-      );
-    }
-
-    const kafkaService = getKafkaService(profileId);
-    await kafkaService.connect();
-    
-    const result = await kafkaService.cleanupMessages(topicName);
-    
-    return NextResponse.json({
-      message: 'Messages cleaned up successfully',
-      deletedPartitions: result.deletedPartitions,
-      totalMessages: result.totalMessages
-    });
+    const { name } = await params;
+    validateTopicName(name);
+    const service = await getKafkaService(readTopicProfileId(request, true));
+    await service.connect();
+    const result = await service.cleanupMessages(name);
+    return NextResponse.json({ message: 'Records purged up to the captured partition offsets', ...result });
   } catch (error) {
-    console.error('Error cleaning up messages:', error);
-    return NextResponse.json(
-      { 
-        error: 'Failed to cleanup messages',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      },
-      { status: 500 }
-    );
+    return topicApiError(error, 'Failed to purge records. Check the selected Kafka cluster.');
   }
 }

@@ -1,25 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getKafkaService } from '@/lib/kafka';
+import { getKafkaService, validateTopicName } from '@/lib/kafka';
+import { readTopicProfileId, topicApiError } from '../topic-api';
 
-export async function DELETE(
-  request: NextRequest,
-  { params }: { params: Promise<{ name: string }> }
-) {
+// @group APIEndpoints > Topics : Delete a topic on the requested profile
+export async function DELETE(request: NextRequest, { params }: { params: Promise<{ name: string }> }) {
   try {
     const { name } = await params;
-    const { searchParams } = new URL(request.url);
-    const profileId = searchParams.get('profileId') || undefined;
-    
-    const kafkaService = getKafkaService(profileId);
-    await kafkaService.connect();
-    await kafkaService.deleteTopic(name);
-    
+    validateTopicName(name);
+    const service = await getKafkaService(readTopicProfileId(request, true));
+    await service.connect();
+    await service.deleteTopic(name);
     return NextResponse.json({ message: 'Topic deleted successfully' });
   } catch (error) {
-    console.error('Error deleting topic:', error);
-    return NextResponse.json(
-      { error: 'Failed to delete topic' },
-      { status: 500 }
-    );
+    return topicApiError(error, 'Failed to delete topic. Check the selected Kafka cluster.');
   }
 }
