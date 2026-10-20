@@ -1,10 +1,14 @@
 services:
+  # @group Configuration > Application : Versioned image with authenticated access and persistent settings
   ezkafka-visualizer:
+    image: chandanbhagat/ezkafka-visualizer:${EZKAFKA_VERSION:-1.1.0}
     build:
       context: .
       dockerfile: Dockerfile
       args:
         - PORT=${APP_PORT:-3700}
+        - APP_VERSION=${EZKAFKA_VERSION:-1.1.0}
+        - VCS_REF=${VCS_REF:-unknown}
     ports:
       - "127.0.0.1:${HOST_PORT:-3700}:${APP_PORT:-3700}"
     environment:
@@ -19,7 +23,7 @@ services:
       - EZKAFKA_ADMIN_PASSWORD=${EZKAFKA_ADMIN_PASSWORD:?Set a strong administrator password}
       - EZKAFKA_READONLY_USERNAME=${EZKAFKA_READONLY_USERNAME:-}
       - EZKAFKA_READONLY_PASSWORD=${EZKAFKA_READONLY_PASSWORD:-}
-      - EZKAFKA_PUBLIC_ORIGIN=${EZKAFKA_PUBLIC_ORIGIN:-http://localhost:3700}
+      - EZKAFKA_PUBLIC_ORIGIN=${EZKAFKA_PUBLIC_ORIGIN:?Set the exact browser origin, such as http://localhost:3700}
       - EZKAFKA_CONFIG_PATH=/app/data/settings.json
     volumes:
       - visualizer-data:/app/data

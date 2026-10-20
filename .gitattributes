@@ -1,0 +1,3 @@
+# @group Configuration > LineEndings : Keep executable shell helpers portable
+*.sh text eol=lf
+*.bat text eol=crlf

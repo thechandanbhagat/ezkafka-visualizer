@@ -1,4 +1,4 @@
-# Use the official Node.js runtime as the base image
+# @group Configuration > Base : Build and run with the supported Node.js runtime
 FROM node:22-alpine AS base
 
 # Install dependencies only when needed
@@ -8,7 +8,7 @@ RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
 # Install dependencies based on the preferred package manager
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json* npm-shrinkwrap.json* ./
 RUN npm ci
 
 # Rebuild the source code only when needed
@@ -27,6 +27,15 @@ RUN npm run build
 # Production image, copy all the files and run next
 FROM base AS runner
 WORKDIR /app
+
+# @group Configuration > Release : Identify published images without including repository state
+ARG APP_VERSION=1.1.0
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.title="EZ Kafka Visualizer" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.source="https://github.com/thechandanbhagat/ezkafka-visualizer" \
+      org.opencontainers.image.licenses="MIT"
 
 ENV NODE_ENV=production
 # Uncomment the following line in case you want to disable telemetry during runtime.
