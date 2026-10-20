@@ -1,6 +1,6 @@
 {
   "name": "ezkafka-visualizer",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "A modern, user-friendly web application for visualizing and managing Apache Kafka clusters",
   "main": "server.js",
   "bin": {
@@ -41,13 +41,21 @@
     "win32"
   ],
   "files": [
-    ".next",
+    ".next/BUILD_ID",
+    ".next/package.json",
+    ".next/*manifest.json",
+    ".next/required-server-files.json",
+    ".next/release-build.json",
+    ".next/server",
+    ".next/static",
     "public",
-    "bin",
+    "bin/ezkafka-visualizer.js",
     "server.js",
+    "scripts/access-config.cjs",
+    "scripts/release-validation.cjs",
     "README.md",
     "LICENSE",
-    "scripts"
+    "release-runtime.json"
   ],
   "scripts": {
     "dev": "node dev.js",
@@ -59,7 +67,10 @@
     "test:e2e": "playwright test",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
-    "test:integration": "vitest run tests/integration"
+    "test:integration": "vitest run tests/integration",
+    "postbuild": "node scripts/release-validation.cjs --stamp",
+    "prepack": "node scripts/release-validation.cjs --staged",
+    "release:pack": "node scripts/release-pack.cjs"
   },
   "publishConfig": {
     "access": "public",
@@ -71,7 +82,8 @@
     "next": "15.5.28",
     "react": "19.1.10",
     "react-dom": "19.1.10",
-    "recharts": "^3.1.0"
+    "recharts": "^3.1.0",
+    "@next/env": "15.5.28"
   },
   "overrides": {
     "next": {
@@ -90,5 +102,12 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.12"
+  },
+  "bundleDependencies": [
+    "next",
+    "@next/env"
+  ],
+  "optionalDependencies": {
+    "sharp": "0.35.5"
   }
 }
