@@ -1,0 +1,12 @@
+# @group Configuration : Persist profiles across pod replacement
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ezkafka-visualizer-data
+  namespace: ezkafka-visualizer
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

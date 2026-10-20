@@ -8,8 +8,9 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: ezkafka-visualizer
-  minReplicas: 2
-  maxReplicas: 10
+  # Multiple replicas require a shared settings store and routed inspection sessions.
+  minReplicas: 1
+  maxReplicas: 1
   metrics:
   - type: Resource
     resource:

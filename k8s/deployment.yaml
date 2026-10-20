@@ -6,7 +6,10 @@ metadata:
   labels:
     app: ezkafka-visualizer
 spec:
-  replicas: 2
+  # Settings and inspection sessions are process-local; run one replica.
+  replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: ezkafka-visualizer
@@ -15,6 +18,8 @@ spec:
       labels:
         app: ezkafka-visualizer
     spec:
+      securityContext:
+        fsGroup: 1001
       containers:
       - name: ezkafka-visualizer
         image: ezkafka-visualizer:latest
@@ -48,6 +53,44 @@ spec:
             configMapKeyRef:
               name: ezkafka-visualizer-config
               key: KAFKA_CLIENT_ID
+        - name: EZKAFKA_PUBLIC_ORIGIN
+          valueFrom:
+            configMapKeyRef:
+              name: ezkafka-visualizer-config
+              key: EZKAFKA_PUBLIC_ORIGIN
+        - name: EZKAFKA_CONFIG_PATH
+          value: /app/data/settings.json
+        - name: EZKAFKA_ADMIN_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: ezkafka-visualizer-auth
+              key: admin-username
+        - name: EZKAFKA_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ezkafka-visualizer-auth
+              key: admin-password
+        - name: EZKAFKA_READONLY_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: ezkafka-visualizer-auth
+              key: readonly-username
+              optional: true
+        - name: EZKAFKA_READONLY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ezkafka-visualizer-auth
+              key: readonly-password
+              optional: true
+        volumeMounts:
+        - name: configuration
+          mountPath: /app/data
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
         resources:
           requests:
             memory: "256Mi"
@@ -56,19 +99,21 @@ spec:
             memory: "512Mi"
             cpu: "500m"
         livenessProbe:
-          httpGet:
-            path: /
+          tcpSocket:
             port: 3700
           initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
         readinessProbe:
-          httpGet:
-            path: /
+          tcpSocket:
             port: 3700
           initialDelaySeconds: 5
           periodSeconds: 5
           timeoutSeconds: 3
           failureThreshold: 3
+      volumes:
+      - name: configuration
+        persistentVolumeClaim:
+          claimName: ezkafka-visualizer-data
       restartPolicy: Always

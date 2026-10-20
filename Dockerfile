@@ -1,5 +1,5 @@
 # Use the official Node.js runtime as the base image
-FROM node:18-alpine AS base
+FROM node:22-alpine AS base
 
 # Install dependencies only when needed
 FROM base AS deps
@@ -40,11 +40,13 @@ COPY --from=builder /app/public ./public
 # Set the correct permission for prerender cache
 RUN mkdir .next
 RUN chown nextjs:nodejs .next
+RUN mkdir data && chown nextjs:nodejs data && chmod 700 data
 
 # Automatically leverage output traces to reduce image size
 # https://nextjs.org/docs/advanced-features/output-file-tracing
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/access-config.cjs /app/scripts/start-standalone.cjs ./scripts/
 
 USER nextjs
 
@@ -52,6 +54,7 @@ USER nextjs
 ARG PORT=3700
 ENV PORT=${PORT}
 ENV HOSTNAME="0.0.0.0"
+ENV EZKAFKA_CONFIG_PATH="/app/data/settings.json"
 
 # Kafka configuration environment variables
 ENV KAFKA_BROKERS="localhost:9092"
@@ -63,4 +66,4 @@ EXPOSE ${PORT}
 
 # server.js is created by next build from the standalone output
 # https://nextjs.org/docs/pages/api-reference/next-config-js/output
-CMD ["node", "server.js"]
+CMD ["node", "scripts/start-standalone.cjs"]

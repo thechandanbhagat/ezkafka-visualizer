@@ -4,8 +4,7 @@ metadata:
   name: ezkafka-visualizer-ingress
   namespace: ezkafka-visualizer
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
   ingressClassName: nginx
   rules:
@@ -19,8 +18,7 @@ spec:
             name: ezkafka-visualizer-service
             port:
               number: 3700
-  # Uncomment the following section if you want to enable TLS
-  # tls:
-  # - hosts:
-  #   - ezkafka.local
-  #   secretName: ezkafka-visualizer-tls
+  tls:
+  - hosts:
+    - ezkafka.local
+    secretName: ezkafka-visualizer-tls

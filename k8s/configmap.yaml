@@ -7,6 +7,7 @@ data:
   NODE_ENV: "production"
   PORT: "3700"
   HOSTNAME: "0.0.0.0"
+  EZKAFKA_PUBLIC_ORIGIN: "https://ezkafka.local"
   # Kafka configuration - update these values according to your Kafka setup
   KAFKA_BROKERS: "kafka-service:9092"
   KAFKA_CLIENT_ID: "ezkafka-visualizer"
