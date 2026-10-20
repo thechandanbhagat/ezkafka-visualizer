@@ -4,13 +4,12 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
-// Parse command line arguments
+// @group Configuration : Parse CLI arguments without passing them through a command shell
 const args = process.argv.slice(2);
 let port = process.env.PORT || '3700';
 let kafkaBrokers = process.env.KAFKA_BROKERS || 'localhost:9092';
 let help = false;
 
-// Parse arguments
 for (let i = 0; i < args.length; i++) {
   switch (args[i]) {
     case '-p':
@@ -25,6 +24,9 @@ for (let i = 0; i < args.length; i++) {
     case '--help':
       help = true;
       break;
+    default:
+      console.error('Unknown option. Use --help for supported arguments.');
+      process.exit(1);
   }
 }
 
@@ -45,6 +47,12 @@ Environment Variables:
   KAFKA_CLIENT_ID             Kafka client identifier (default: ezkafka-visualizer)
   KAFKA_CONNECTION_TIMEOUT    Connection timeout in ms (default: 3000)
   KAFKA_REQUEST_TIMEOUT       Request timeout in ms (default: 30000)
+  EZKAFKA_BIND_HOST           Bind address (default: 127.0.0.1)
+  EZKAFKA_PUBLIC_ORIGIN       Exact HTTP(S) origin for authenticated deployment
+  EZKAFKA_ADMIN_USERNAME      Required for network deployment
+  EZKAFKA_ADMIN_PASSWORD      Required for network deployment (16+ characters)
+  EZKAFKA_READONLY_USERNAME   Optional read-only account
+  EZKAFKA_READONLY_PASSWORD   Optional read-only password (16+ characters)
 
 Examples:
   ezkafka-visualizer                           # Run on default port 3700
@@ -55,16 +63,14 @@ Examples:
   process.exit(0);
 }
 
-// Set environment variables
+// @group Configuration : Delegate final validation and socket binding to the guarded server
 process.env.PORT = port;
 process.env.KAFKA_BROKERS = kafkaBrokers;
 
 console.log(`🚀 Starting EZ Kafka Visualizer...`);
 console.log(`📡 Port: ${port}`);
-console.log(`🔗 Kafka Brokers: ${kafkaBrokers}`);
-console.log(`🌐 Access at: http://localhost:${port}`);
 
-// Find the server.js file
+// @group Validation : Verify the installed server entry point
 const serverPath = path.join(__dirname, '..', 'server.js');
 
 if (!fs.existsSync(serverPath)) {
@@ -73,8 +79,8 @@ if (!fs.existsSync(serverPath)) {
   process.exit(1);
 }
 
-// Start the server
-const serverProcess = spawn('node', [serverPath], {
+// @group Configuration > Launch : Reuse the current Node runtime
+const serverProcess = spawn(process.execPath, [serverPath], {
   stdio: 'inherit',
   env: { ...process.env }
 });
@@ -88,10 +94,10 @@ serverProcess.on('exit', (code) => {
   if (code !== 0) {
     console.error(`❌ Server exited with code ${code}`);
   }
-  process.exit(code);
+  process.exit(code ?? 1);
 });
 
-// Handle graceful shutdown
+// @group Configuration > Shutdown : Forward termination to the owned child server
 process.on('SIGINT', () => {
   console.log('\n🛑 Shutting down EZ Kafka Visualizer...');
   serverProcess.kill('SIGINT');
